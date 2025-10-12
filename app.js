@@ -43,12 +43,12 @@ if (process.env.NODE_ENV !== "PRODUCTION") {
 // import routes
 const user = require("./controller/user");
 const siswa = require("./controller/siswaController");
+const dashboard = require("./controller/dasboardController");
 
 // define routes
 app.use("/users", user);
 app.use("/siswa", siswa);
-
-
+app.use("/dashboard", dashboard);
 
 // app.use("", welcome);
 
