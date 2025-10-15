@@ -88,8 +88,8 @@ router.post(
                 });
             }
 
-            // Baca file Excel
-            const workbook = xlsx.readFile(req.file.path);
+            // Gunakan buffer langsung tanpa menyimpan file
+            const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
             const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
             const data = xlsx.utils.sheet_to_json(worksheet);
@@ -205,11 +205,7 @@ router.post(
                 }
             }
 
-            // Hapus file temporary
-            const fs = require('fs');
-            fs.unlinkSync(req.file.path);
-
-            // Response hasil import
+            // Response hasil import (TIDAK ADA HAPUS FILE LAGI)
             res.status(200).json({
                 code: 200,
                 status: "success",
@@ -223,14 +219,6 @@ router.post(
             });
 
         } catch (error) {
-            // Hapus file temporary jika ada error
-            if (req.file && req.file.path) {
-                const fs = require('fs');
-                if (fs.existsSync(req.file.path)) {
-                    fs.unlinkSync(req.file.path);
-                }
-            }
-
             return res.status(500).json({
                 code: 500,
                 status: "error",
