@@ -48,21 +48,16 @@ const isValidUUID = (id) => {
 };
 
 // Konfigurasi multer untuk upload file
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, 'siswa-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
 const upload = multer({
-    storage: storage,
+    storage: multer.memoryStorage(), // Gunakan memory storage
     fileFilter: function (req, file, cb) {
-        if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-            file.mimetype === 'application/vnd.ms-excel') {
+        const allowedMimeTypes = [
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel',
+            'application/octet-stream'
+        ];
+
+        if (allowedMimeTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
             cb(new Error('Hanya file Excel (.xlsx, .xls) yang diizinkan'), false);
