@@ -1,6 +1,8 @@
 const app = require("./app");
-const connectDatabase = require("./db/Database");
 const cloudinary = require("cloudinary");
+
+// Import sequelize
+const sequelize = require('./config/database');
 
 // Handling uncaught Exception
 process.on("uncaughtException", (err) => {
@@ -15,15 +17,30 @@ if (process.env.NODE_ENV !== "PRODUCTION") {
   });
 }
 
-// connect db
-connectDatabase();
+// Connect dan sync database
+async function initializeDatabase() {
+  try {
+    await sequelize.authenticate();
+    console.log('MySQL Database connected...');
 
+    // Sync tanpa force (tidak hapus data yang ada)
+    await sequelize.sync({ force: false });
+    console.log('Database synced...');
+  } catch (error) {
+    console.error('Database initialization failed:', error);
+    process.exit(1);
+  }
+}
+
+// Panggil fungsi initialize
+initializeDatabase();
+
+// Cloudinary config
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
-})
-
+});
 
 // create server
 const server = app.listen(process.env.PORT, () => {

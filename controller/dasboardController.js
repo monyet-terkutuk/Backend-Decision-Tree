@@ -4,7 +4,7 @@ const Siswa = require("../model/Siswa");
 const User = require("../model/User");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
 const { isAuthenticated } = require("../middleware/auth");
-const mongoose = require('mongoose'); // IMPORT MONGOOSE
+const { Op, Sequelize } = require("sequelize");
 
 // ✅ Get Dashboard Statistics
 router.get(
@@ -14,75 +14,58 @@ router.get(
         try {
             const { tahun, semester } = req.query;
 
-            // Build match stage untuk filter
-            let matchStage = {};
-            if (tahun) matchStage.tahun = parseInt(tahun);
-            if (semester) matchStage.semester = semester;
+            // Build where condition untuk filter
+            let whereCondition = {};
+            if (tahun) whereCondition.tahun = parseInt(tahun);
+            if (semester) whereCondition.semester = semester;
 
             // 1. Total Wali Kelas
-            const totalWaliKelas = await User.countDocuments({ role: 'walikelas' });
+            const totalWaliKelas = await User.count({
+                where: { role: 'walikelas' }
+            });
 
             // 2. Total Siswa
-            const totalSiswa = await Siswa.countDocuments(matchStage);
+            const totalSiswa = await Siswa.count({ where: whereCondition });
 
             // 3. Rata-rata Nilai Akademik
-            const avgNilaiResult = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: null,
-                        avgNilai: { $avg: "$nilai" }
-                    }
-                }
-            ]);
-            const avgNilai = avgNilaiResult.length > 0 ? Math.round(avgNilaiResult[0].avgNilai * 100) / 100 : 0;
+            const avgNilaiResult = await Siswa.findOne({
+                where: whereCondition,
+                attributes: [
+                    [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai']
+                ],
+                raw: true
+            });
+            const avgNilai = avgNilaiResult?.avgNilai ?
+                Math.round(parseFloat(avgNilaiResult.avgNilai) * 100) / 100 : 0;
 
             // 4. Rata-rata Kehadiran
-            const avgKehadiranResult = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: null,
-                        avgKehadiran: { $avg: "$kehadiran" }
-                    }
-                }
-            ]);
-            const avgKehadiran = avgKehadiranResult.length > 0 ? Math.round(avgKehadiranResult[0].avgKehadiran * 100) / 100 : 0;
+            const avgKehadiranResult = await Siswa.findOne({
+                where: whereCondition,
+                attributes: [
+                    [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran']
+                ],
+                raw: true
+            });
+            const avgKehadiran = avgKehadiranResult?.avgKehadiran ?
+                Math.round(parseFloat(avgKehadiranResult.avgKehadiran) * 100) / 100 : 0;
 
             // 5. Jumlah Kelas (unik)
-            const kelasResult = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: "$kelas"
-                    }
-                },
-                {
-                    $count: "totalKelas"
-                }
-            ]);
-            const totalKelas = kelasResult.length > 0 ? kelasResult[0].totalKelas : 0;
+            const totalKelas = await Siswa.count({
+                where: whereCondition,
+                distinct: true,
+                col: 'kelas'
+            });
 
-            // 6. Distribusi Prestasi per Semester
-            const prestasiDistribution = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: "$prestasi",
-                        count: { $sum: 1 }
-                    }
-                },
-                {
-                    $project: {
-                        prestasi: "$_id",
-                        count: 1,
-                        _id: 0
-                    }
-                },
-                {
-                    $sort: { count: -1 }
-                }
-            ]);
+            // 6. Distribusi Prestasi
+            const prestasiDistribution = await Siswa.findAll({
+                where: whereCondition,
+                attributes: [
+                    'prestasi',
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+                ],
+                group: ['prestasi'],
+                raw: true
+            });
 
             // Format distribusi prestasi dengan semua kategori
             const allPrestasiCategories = ['Sangat Baik', 'Baik', 'Cukup', 'Kurang', 'Kurang Sekali'];
@@ -90,95 +73,85 @@ router.get(
                 const found = prestasiDistribution.find(item => item.prestasi === category);
                 return {
                     prestasi: category,
-                    count: found ? found.count : 0
+                    count: found ? parseInt(found.count) : 0
                 };
             });
 
             // 7. Data untuk chart - Prestasi per Semester
-            const prestasiPerSemester = await Siswa.aggregate([
-                {
-                    $match: matchStage
-                },
-                {
-                    $group: {
-                        _id: {
-                            semester: "$semester",
-                            prestasi: "$prestasi"
-                        },
-                        count: { $sum: 1 }
-                    }
-                },
-                {
-                    $group: {
-                        _id: "$_id.semester",
-                        data: {
-                            $push: {
-                                prestasi: "$_id.prestasi",
-                                count: "$count"
-                            }
-                        }
-                    }
-                },
-                {
-                    $project: {
-                        semester: "$_id",
-                        data: 1,
-                        _id: 0
-                    }
-                },
-                {
-                    $sort: { semester: 1 }
+            const prestasiPerSemester = await Siswa.findAll({
+                where: whereCondition,
+                attributes: [
+                    'semester',
+                    'prestasi',
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+                ],
+                group: ['semester', 'prestasi'],
+                order: [['semester', 'ASC']],
+                raw: true
+            });
+
+            // Format data prestasi per semester
+            const formattedPrestasiPerSemester = prestasiPerSemester.reduce((acc, item) => {
+                const existingSemester = acc.find(s => s.semester === item.semester);
+                if (existingSemester) {
+                    existingSemester.data.push({
+                        prestasi: item.prestasi,
+                        count: parseInt(item.count)
+                    });
+                } else {
+                    acc.push({
+                        semester: item.semester,
+                        data: [{
+                            prestasi: item.prestasi,
+                            count: parseInt(item.count)
+                        }]
+                    });
                 }
-            ]);
+                return acc;
+            }, []);
 
             // 8. Data untuk chart - Rata-rata per Kelas
-            const avgPerKelas = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: "$kelas",
-                        avgNilai: { $avg: "$nilai" },
-                        avgKehadiran: { $avg: "$kehadiran" },
-                        totalSiswa: { $sum: 1 }
-                    }
-                },
-                {
-                    $project: {
-                        kelas: "$_id",
-                        avgNilai: { $round: ["$avgNilai", 2] },
-                        avgKehadiran: { $round: ["$avgKehadiran", 2] },
-                        totalSiswa: 1,
-                        _id: 0
-                    }
-                },
-                {
-                    $sort: { kelas: 1 }
-                }
-            ]);
+            const avgPerKelas = await Siswa.findAll({
+                where: whereCondition,
+                attributes: [
+                    'kelas',
+                    [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
+                    [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran'],
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'totalSiswa']
+                ],
+                group: ['kelas'],
+                order: [['kelas', 'ASC']],
+                raw: true
+            });
+
+            // Format data avg per kelas
+            const formattedAvgPerKelas = avgPerKelas.map(item => ({
+                kelas: item.kelas,
+                avgNilai: item.avgNilai ? Math.round(parseFloat(item.avgNilai) * 100) / 100 : 0,
+                avgKehadiran: item.avgKehadiran ? Math.round(parseFloat(item.avgKehadiran) * 100) / 100 : 0,
+                totalSiswa: parseInt(item.totalSiswa)
+            }));
 
             // 9. Trend Nilai per Tahun
-            const trendPerTahun = await Siswa.aggregate([
-                {
-                    $group: {
-                        _id: "$tahun",
-                        avgNilai: { $avg: "$nilai" },
-                        avgKehadiran: { $avg: "$kehadiran" },
-                        totalSiswa: { $sum: 1 }
-                    }
-                },
-                {
-                    $project: {
-                        tahun: "$_id",
-                        avgNilai: { $round: ["$avgNilai", 2] },
-                        avgKehadiran: { $round: ["$avgKehadiran", 2] },
-                        totalSiswa: 1,
-                        _id: 0
-                    }
-                },
-                {
-                    $sort: { tahun: 1 }
-                }
-            ]);
+            const trendPerTahun = await Siswa.findAll({
+                attributes: [
+                    'tahun',
+                    [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
+                    [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran'],
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'totalSiswa']
+                ],
+                group: ['tahun'],
+                order: [['tahun', 'ASC']],
+                raw: true
+            });
+
+            // Format data trend per tahun
+            const formattedTrendPerTahun = trendPerTahun.map(item => ({
+                tahun: item.tahun,
+                avgNilai: item.avgNilai ? Math.round(parseFloat(item.avgNilai) * 100) / 100 : 0,
+                avgKehadiran: item.avgKehadiran ? Math.round(parseFloat(item.avgKehadiran) * 100) / 100 : 0,
+                totalSiswa: parseInt(item.totalSiswa)
+            }));
 
             res.status(200).json({
                 code: 200,
@@ -194,9 +167,9 @@ router.get(
                     },
                     prestasiDistribution: formattedPrestasi,
                     charts: {
-                        prestasiPerSemester,
-                        avgPerKelas,
-                        trendPerTahun
+                        prestasiPerSemester: formattedPrestasiPerSemester,
+                        avgPerKelas: formattedAvgPerKelas,
+                        trendPerTahun: formattedTrendPerTahun
                     }
                 }
             });
@@ -221,60 +194,46 @@ router.get(
             const { walikelas_id } = req.params;
             const { tahun, semester } = req.query;
 
-            // Build match stage untuk filter
-            let matchStage = { walikelas_id: new mongoose.Types.ObjectId(walikelas_id) };
-            if (tahun) matchStage.tahun = parseInt(tahun);
-            if (semester) matchStage.semester = semester;
+            // Build where condition untuk filter
+            let whereCondition = { walikelas_id };
+            if (tahun) whereCondition.tahun = parseInt(tahun);
+            if (semester) whereCondition.semester = semester;
 
             // Total Siswa untuk wali kelas ini
-            const totalSiswa = await Siswa.countDocuments(matchStage);
+            const totalSiswa = await Siswa.count({ where: whereCondition });
 
             // Rata-rata Nilai dan Kehadiran
-            const avgStats = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: null,
-                        avgNilai: { $avg: "$nilai" },
-                        avgKehadiran: { $avg: "$kehadiran" }
-                    }
-                }
-            ]);
+            const avgStats = await Siswa.findOne({
+                where: whereCondition,
+                attributes: [
+                    [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
+                    [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran']
+                ],
+                raw: true
+            });
 
-            const avgNilai = avgStats.length > 0 ? Math.round(avgStats[0].avgNilai * 100) / 100 : 0;
-            const avgKehadiran = avgStats.length > 0 ? Math.round(avgStats[0].avgKehadiran * 100) / 100 : 0;
+            const avgNilai = avgStats?.avgNilai ?
+                Math.round(parseFloat(avgStats.avgNilai) * 100) / 100 : 0;
+            const avgKehadiran = avgStats?.avgKehadiran ?
+                Math.round(parseFloat(avgStats.avgKehadiran) * 100) / 100 : 0;
 
             // Jumlah Kelas untuk wali kelas ini
-            const kelasResult = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: "$kelas"
-                    }
-                },
-                {
-                    $count: "totalKelas"
-                }
-            ]);
-            const totalKelas = kelasResult.length > 0 ? kelasResult[0].totalKelas : 0;
+            const totalKelas = await Siswa.count({
+                where: whereCondition,
+                distinct: true,
+                col: 'kelas'
+            });
 
             // Distribusi Prestasi
-            const prestasiDistribution = await Siswa.aggregate([
-                { $match: matchStage },
-                {
-                    $group: {
-                        _id: "$prestasi",
-                        count: { $sum: 1 }
-                    }
-                },
-                {
-                    $project: {
-                        prestasi: "$_id",
-                        count: 1,
-                        _id: 0
-                    }
-                }
-            ]);
+            const prestasiDistribution = await Siswa.findAll({
+                where: whereCondition,
+                attributes: [
+                    'prestasi',
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+                ],
+                group: ['prestasi'],
+                raw: true
+            });
 
             // Format distribusi prestasi dengan semua kategori
             const allPrestasiCategories = ['Sangat Baik', 'Baik', 'Cukup', 'Kurang', 'Kurang Sekali'];
@@ -282,7 +241,7 @@ router.get(
                 const found = prestasiDistribution.find(item => item.prestasi === category);
                 return {
                     prestasi: category,
-                    count: found ? found.count : 0
+                    count: found ? parseInt(found.count) : 0
                 };
             });
 
@@ -318,18 +277,35 @@ router.get(
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
         try {
-            const years = await Siswa.distinct("tahun");
-            const semesters = await Siswa.distinct("semester");
-            const classes = await Siswa.distinct("kelas");
+            // Get distinct years
+            const years = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('tahun')), 'tahun']],
+                order: [['tahun', 'DESC']],
+                raw: true
+            });
+
+            // Get distinct semesters
+            const semesters = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('semester')), 'semester']],
+                order: [['semester', 'ASC']],
+                raw: true
+            });
+
+            // Get distinct classes
+            const classes = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('kelas')), 'kelas']],
+                order: [['kelas', 'ASC']],
+                raw: true
+            });
 
             res.status(200).json({
                 code: 200,
                 status: "success",
                 message: "Available filters retrieved successfully",
                 data: {
-                    years: years.sort((a, b) => b - a), // Urutkan tahun descending
-                    semesters: semesters.sort(),
-                    classes: classes.sort()
+                    years: years.map(item => item.tahun),
+                    semesters: semesters.map(item => item.semester),
+                    classes: classes.map(item => item.kelas)
                 }
             });
 

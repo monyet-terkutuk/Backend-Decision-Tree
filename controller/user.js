@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const jwt = require("jsonwebtoken");
 const Validator = require("fastest-validator");
 const v = new Validator();
+const { Op } = require("sequelize");
 
 const ErrorHandler = require("../utils/ErrorHandler");
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
@@ -37,7 +38,7 @@ router.post("/register", catchAsyncErrors(async (req, res, next) => {
   const { name, email, password, phone, role } = req.body;
 
   // Check if email already exists
-  const emailUsed = await User.findOne({ email });
+  const emailUsed = await User.findOne({ where: { email } });
   if (emailUsed) {
     return res.status(400).json({
       code: 400,
@@ -63,7 +64,7 @@ router.post("/register", catchAsyncErrors(async (req, res, next) => {
     status: "success",
     message: "User registered successfully",
     data: {
-      id: user._id,
+      id: user.id,
       name: user.name,
       email: user.email,
       phone: user.phone,
@@ -96,7 +97,7 @@ router.post("/login", catchAsyncErrors(async (req, res, next) => {
   }
 
   // Find user by email
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ where: { email } });
   if (!user) {
     return res.status(401).json({
       code: 401,
@@ -118,7 +119,7 @@ router.post("/login", catchAsyncErrors(async (req, res, next) => {
   // Generate JWT token
   const token = jwt.sign(
     {
-      id: user._id,
+      id: user.id,
       role: user.role,
       name: user.name,
       email: user.email
@@ -133,7 +134,7 @@ router.post("/login", catchAsyncErrors(async (req, res, next) => {
     message: "Login successful",
     data: {
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
@@ -152,7 +153,9 @@ router.get(
   "/profile",
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
-    const user = await User.findById(req.user.id);
+    const user = await User.findByPk(req.user.id, {
+      attributes: { exclude: ['password'] }
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -167,7 +170,7 @@ router.get(
       status: "success",
       message: "Profile retrieved successfully",
       data: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
@@ -208,18 +211,21 @@ router.put(
     if (name) updateData.name = name;
     if (phone) updateData.phone = phone;
 
-    const user = await User.findByIdAndUpdate(
-      req.user.id,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    await User.update(updateData, {
+      where: { id: req.user.id }
+    });
+
+    // Get updated user data
+    const user = await User.findByPk(req.user.id, {
+      attributes: { exclude: ['password'] }
+    });
 
     res.status(200).json({
       code: 200,
       status: "success",
       message: "Profile updated successfully",
       data: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
@@ -255,7 +261,7 @@ router.put(
 
     const { currentPassword, newPassword } = req.body;
 
-    const user = await User.findById(req.user.id);
+    const user = await User.findByPk(req.user.id);
     if (!user) {
       return res.status(404).json({
         code: 404,
@@ -278,8 +284,10 @@ router.put(
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     // Update password
-    user.password = hashedPassword;
-    await user.save();
+    await User.update(
+      { password: hashedPassword },
+      { where: { id: req.user.id } }
+    );
 
     res.status(200).json({
       code: 200,
@@ -297,14 +305,26 @@ router.get(
   "/list",
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
-    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
+
+    const users = await User.findAll({
+      attributes: { exclude: ['password'] },
+      order: [['createdAt', 'DESC']]
+    });
 
     res.status(200).json({
       code: 200,
       status: "success",
       message: "Users retrieved successfully",
       data: users.map(user => ({
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
@@ -324,7 +344,18 @@ router.get(
   "/:id",
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
-    const user = await User.findById(req.params.id).select('-password');
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
+
+    const user = await User.findByPk(req.params.id, {
+      attributes: { exclude: ['password'] }
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -339,7 +370,7 @@ router.get(
       status: "success",
       message: "User retrieved successfully",
       data: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
@@ -359,6 +390,15 @@ router.put(
   "/:id",
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
+
     const schema = {
       name: { type: "string", optional: true, max: 255 },
       email: { type: "email", optional: true },
@@ -378,13 +418,25 @@ router.put(
 
     const { name, email, phone, role } = req.body;
 
+    // Check if user exists
+    const existingUser = await User.findByPk(req.params.id);
+    if (!existingUser) {
+      return res.status(404).json({
+        code: 404,
+        status: "error",
+        message: "User not found",
+      });
+    }
+
     // Check if email already exists (excluding current user)
     if (email) {
-      const existingUser = await User.findOne({
-        email,
-        _id: { $ne: req.params.id }
+      const userWithEmail = await User.findOne({
+        where: {
+          email,
+          id: { [Op.ne]: req.params.id }
+        }
       });
-      if (existingUser) {
+      if (userWithEmail) {
         return res.status(400).json({
           code: 400,
           status: "error",
@@ -399,26 +451,21 @@ router.put(
     if (phone) updateData.phone = phone;
     if (role) updateData.role = role;
 
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
+    await User.update(updateData, {
+      where: { id: req.params.id }
+    });
 
-    if (!user) {
-      return res.status(404).json({
-        code: 404,
-        status: "error",
-        message: "User not found",
-      });
-    }
+    // Get updated user data
+    const user = await User.findByPk(req.params.id, {
+      attributes: { exclude: ['password'] }
+    });
 
     res.status(200).json({
       code: 200,
       status: "success",
       message: "User updated successfully",
       data: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
@@ -437,9 +484,29 @@ router.delete(
   "/:id",
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
-    const user = await User.findByIdAndDelete(req.params.id);
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
 
-    if (!user) {
+    // Prevent user from deleting themselves
+    if (req.params.id === req.user.id) {
+      return res.status(400).json({
+        code: 400,
+        status: "error",
+        message: "Cannot delete your own account",
+      });
+    }
+
+    const deleted = await User.destroy({
+      where: { id: req.params.id }
+    });
+
+    if (!deleted) {
       return res.status(404).json({
         code: 404,
         status: "error",

@@ -1,12 +1,14 @@
 const express = require("express");
 const router = express.Router();
 const Siswa = require("../model/Siswa");
+const User = require("../model/User");
 const Validator = require("fastest-validator");
 const v = new Validator();
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
 const { isAuthenticated, isAdmin } = require("../middleware/auth");
 const axios = require("axios");
-const mongoose = require('mongoose'); // JANGAN LUPA IMPORT MONGOOSE
+const { Op, Sequelize } = require("sequelize");
+const { v4: uuidv4 } = require('uuid');
 
 const multer = require('multer');
 const xlsx = require('xlsx');
@@ -39,9 +41,10 @@ const getPrediction = async (nilai_akademik, total_kehadiran) => {
     }
 };
 
-// Helper function untuk validasi ObjectId
-const isValidObjectId = (id) => {
-    return mongoose.Types.ObjectId.isValid(id);
+// Helper function untuk validasi UUID
+const isValidUUID = (id) => {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(id);
 };
 
 // Konfigurasi multer untuk upload file
@@ -158,10 +161,12 @@ router.post(
 
                     // Cek duplikat berdasarkan nama, kelas, tahun, semester
                     const existingSiswa = await Siswa.findOne({
-                        name: row['Nama Siswa'],
-                        kelas: row['Kelas'],
-                        tahun: tahun,
-                        semester: row['Semester']
+                        where: {
+                            name: row['Nama Siswa'],
+                            kelas: row['Kelas'],
+                            tahun: tahun,
+                            semester: row['Semester']
+                        }
                     });
 
                     if (existingSiswa) {
@@ -179,8 +184,9 @@ router.post(
                         prestasi = "Cukup";
                     }
 
-                    // Buat data siswa
+                    // Buat data siswa dengan UUID
                     const siswa = await Siswa.create({
+                        id: uuidv4(),
                         name: row['Nama Siswa'],
                         kelas: row['Kelas'],
                         tahun: tahun,
@@ -235,7 +241,7 @@ router.post(
     })
 );
 
-// ✅ Download Template Excel
+// ✅ Download Template Excel (Tetap sama)
 router.get(
     "/template",
     isAuthenticated,
@@ -303,7 +309,7 @@ router.post(
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
         // Validasi walikelas_id
-        if (!isValidObjectId(req.body.walikelas_id)) {
+        if (!isValidUUID(req.body.walikelas_id)) {
             return res.status(400).json({
                 code: 400,
                 status: "error",
@@ -333,6 +339,7 @@ router.post(
         }
 
         const siswa = await Siswa.create({
+            id: uuidv4(),
             name,
             kelas,
             tahun,
@@ -343,35 +350,40 @@ router.post(
             semester
         });
 
-        // Populate walikelas data
-        await siswa.populate("walikelas_id");
+        // Get data dengan include walikelas
+        const siswaWithWalikelas = await Siswa.findByPk(siswa.id, {
+            include: [{
+                model: User,
+                as: 'walikelas',
+                attributes: ['id', 'name', 'email']
+            }]
+        });
 
         res.status(201).json({
             code: 201,
             status: "success",
             message: "Siswa created successfully",
             data: {
-                id: siswa._id,
-                name: siswa.name,
-                kelas: siswa.kelas,
-                tahun: siswa.tahun,
-                nilai: siswa.nilai,
-                kehadiran: siswa.kehadiran,
-                prestasi: siswa.prestasi,
-                walikelas: siswa.walikelas_id ? {
-                    id: siswa.walikelas_id._id,
-                    name: siswa.walikelas_id.name,
-                    email: siswa.walikelas_id.email
+                id: siswaWithWalikelas.id,
+                name: siswaWithWalikelas.name,
+                kelas: siswaWithWalikelas.kelas,
+                tahun: siswaWithWalikelas.tahun,
+                nilai: siswaWithWalikelas.nilai,
+                kehadiran: siswaWithWalikelas.kehadiran,
+                prestasi: siswaWithWalikelas.prestasi,
+                walikelas: siswaWithWalikelas.walikelas ? {
+                    id: siswaWithWalikelas.walikelas.id,
+                    name: siswaWithWalikelas.walikelas.name,
+                    email: siswaWithWalikelas.walikelas.email
                 } : null,
-                semester: siswa.semester,
-                createdAt: siswa.createdAt,
-                updatedAt: siswa.updatedAt
+                semester: siswaWithWalikelas.semester,
+                createdAt: siswaWithWalikelas.createdAt,
+                updatedAt: siswaWithWalikelas.updatedAt
             },
         });
     })
 );
 
-// ✅ Get All Siswa
 // ✅ Get All Siswa (Admin dengan filter lengkap)
 router.get(
     "/list",
@@ -389,10 +401,10 @@ router.get(
                 });
             }
 
-            let filter = {};
+            let whereCondition = {};
 
             // Filter berdasarkan kelas
-            if (kelas) filter.kelas = kelas;
+            if (kelas) whereCondition.kelas = kelas;
 
             // Filter berdasarkan tahun
             if (tahun) {
@@ -404,7 +416,7 @@ router.get(
                         message: "Invalid tahun format, must be a number",
                     });
                 }
-                filter.tahun = tahunNum;
+                whereCondition.tahun = tahunNum;
             }
 
             // Filter berdasarkan semester
@@ -416,19 +428,19 @@ router.get(
                         message: "Invalid semester format, must be '1' or '2'",
                     });
                 }
-                filter.semester = semester;
+                whereCondition.semester = semester;
             }
 
             // Filter berdasarkan wali kelas
             if (walikelas_id) {
-                if (!isValidObjectId(walikelas_id)) {
+                if (!isValidUUID(walikelas_id)) {
                     return res.status(400).json({
                         code: 400,
                         status: "error",
                         message: "Invalid walikelas_id format",
                     });
                 }
-                filter.walikelas_id = walikelas_id;
+                whereCondition.walikelas_id = walikelas_id;
             }
 
             // Filter berdasarkan prestasi
@@ -441,7 +453,7 @@ router.get(
                         message: "Invalid prestasi value",
                     });
                 }
-                filter.prestasi = prestasi;
+                whereCondition.prestasi = prestasi;
             }
 
             // Filter berdasarkan pencarian nama
@@ -453,7 +465,7 @@ router.get(
                         message: "Search query must be at least 2 characters long",
                     });
                 }
-                filter.name = { $regex: search, $options: 'i' }; // Case insensitive search
+                whereCondition.name = { [Op.like]: `%${search}%` };
             }
 
             // Pagination validation
@@ -476,10 +488,10 @@ router.get(
                 });
             }
 
-            const skip = (pageNumber - 1) * pageSize;
+            const offset = (pageNumber - 1) * pageSize;
 
             // Hitung total data
-            const totalSiswa = await Siswa.countDocuments(filter);
+            const totalSiswa = await Siswa.count({ where: whereCondition });
 
             // Hitung total pages
             const totalPages = Math.ceil(totalSiswa / pageSize);
@@ -494,73 +506,64 @@ router.get(
             }
 
             // Get data dengan pagination
-            const siswaList = await Siswa.find(filter)
-                .sort({
-                    tahun: -1,
-                    semester: 1,
-                    kelas: 1,
-                    name: 1
-                })
-                .skip(skip)
-                .limit(pageSize)
-                .populate("walikelas_id");
+            const siswaList = await Siswa.findAll({
+                where: whereCondition,
+                order: [
+                    ['tahun', 'DESC'],
+                    ['semester', 'ASC'],
+                    ['kelas', 'ASC'],
+                    ['name', 'ASC']
+                ],
+                offset: offset,
+                limit: pageSize,
+                include: [{
+                    model: User,
+                    as: 'walikelas',
+                    attributes: ['id', 'name', 'email', 'role']
+                }]
+            });
 
-            // Hitung statistik untuk filter yang dipilih
-            const stats = await Siswa.aggregate([
-                { $match: filter },
-                {
-                    $group: {
-                        _id: null,
-                        avgNilai: { $avg: "$nilai" },
-                        avgKehadiran: { $avg: "$kehadiran" },
-                        totalSiswa: { $sum: 1 },
-                        prestasiDistribution: {
-                            $push: "$prestasi"
-                        }
-                    }
-                },
-                {
-                    $project: {
-                        avgNilai: { $round: ["$avgNilai", 2] },
-                        avgKehadiran: { $round: ["$avgKehadiran", 2] },
-                        totalSiswa: 1,
-                        prestasiDistribution: {
-                            $arrayToObject: {
-                                $map: {
-                                    input: { $setUnion: ["$prestasiDistribution", []] },
-                                    as: "prestasi",
-                                    in: {
-                                        k: "$$prestasi",
-                                        v: {
-                                            $size: {
-                                                $filter: {
-                                                    input: "$prestasiDistribution",
-                                                    as: "p",
-                                                    cond: { $eq: ["$$p", "$$prestasi"] }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            ]);
+            // Hitung statistik
+            const stats = await Siswa.findAll({
+                where: whereCondition,
+                attributes: [
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'totalSiswa'],
+                    [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
+                    [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran'],
+                    [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('nilai')), 2), 'avgNilaiRounded'],
+                    [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('kehadiran')), 2), 'avgKehadiranRounded']
+                ],
+                raw: true
+            });
+
+            // Hitung distribusi prestasi
+            const prestasiStats = await Siswa.findAll({
+                where: whereCondition,
+                attributes: [
+                    'prestasi',
+                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+                ],
+                group: ['prestasi'],
+                raw: true
+            });
 
             const statistics = stats.length > 0 ? stats[0] : {
+                totalSiswa: 0,
                 avgNilai: 0,
                 avgKehadiran: 0,
-                totalSiswa: 0,
-                prestasiDistribution: {}
+                avgNilaiRounded: 0,
+                avgKehadiranRounded: 0
             };
 
             // Format prestasi distribution dengan semua kategori
             const allPrestasiCategories = ['Sangat Baik', 'Baik', 'Cukup', 'Kurang', 'Kurang Sekali'];
-            const formattedPrestasi = allPrestasiCategories.map(category => ({
-                prestasi: category,
-                count: statistics.prestasiDistribution[category] || 0
-            }));
+            const formattedPrestasi = allPrestasiCategories.map(category => {
+                const found = prestasiStats.find(stat => stat.prestasi === category);
+                return {
+                    prestasi: category,
+                    count: found ? parseInt(found.count) : 0
+                };
+            });
 
             res.status(200).json({
                 code: 200,
@@ -570,15 +573,15 @@ router.get(
                     pagination: {
                         currentPage: pageNumber,
                         totalPages: totalPages,
-                        totalSiswa: totalSiswa,
+                        totalSiswa: parseInt(statistics.totalSiswa) || 0,
                         pageSize: pageSize,
                         hasNext: pageNumber < totalPages,
                         hasPrev: pageNumber > 1
                     },
                     statistics: {
-                        avgNilai: statistics.avgNilai,
-                        avgKehadiran: statistics.avgKehadiran,
-                        totalSiswa: statistics.totalSiswa,
+                        avgNilai: parseFloat(statistics.avgNilaiRounded) || 0,
+                        avgKehadiran: parseFloat(statistics.avgKehadiranRounded) || 0,
+                        totalSiswa: parseInt(statistics.totalSiswa) || 0,
                         prestasiDistribution: formattedPrestasi
                     },
                     filters: {
@@ -590,18 +593,18 @@ router.get(
                         search: search || ''
                     },
                     siswa: siswaList.map((siswa) => ({
-                        id: siswa._id,
+                        id: siswa.id,
                         name: siswa.name,
                         kelas: siswa.kelas,
                         tahun: siswa.tahun,
                         nilai: siswa.nilai,
                         kehadiran: siswa.kehadiran,
                         prestasi: siswa.prestasi,
-                        walikelas: siswa.walikelas_id ? {
-                            id: siswa.walikelas_id._id,
-                            name: siswa.walikelas_id.name,
-                            email: siswa.walikelas_id.email,
-                            role: siswa.walikelas_id.role
+                        walikelas: siswa.walikelas ? {
+                            id: siswa.walikelas.id,
+                            name: siswa.walikelas.name,
+                            email: siswa.walikelas.email,
+                            role: siswa.walikelas.role
                         } : null,
                         semester: siswa.semester,
                         createdAt: siswa.createdAt,
@@ -635,27 +638,48 @@ router.get(
                 });
             }
 
-            const years = await Siswa.distinct("tahun");
-            const semesters = await Siswa.distinct("semester");
-            const classes = await Siswa.distinct("kelas");
-            const prestasiCategories = await Siswa.distinct("prestasi");
+            const years = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('tahun')), 'tahun']],
+                order: [['tahun', 'DESC']],
+                raw: true
+            });
+
+            const semesters = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('semester')), 'semester']],
+                order: [['semester', 'ASC']],
+                raw: true
+            });
+
+            const classes = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('kelas')), 'kelas']],
+                order: [['kelas', 'ASC']],
+                raw: true
+            });
+
+            const prestasiCategories = await Siswa.findAll({
+                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('prestasi')), 'prestasi']],
+                order: [['prestasi', 'ASC']],
+                raw: true
+            });
 
             // Get semua wali kelas
-            const walikelasList = await User.find({ role: 'walikelas' })
-                .select('_id name email')
-                .sort({ name: 1 });
+            const walikelasList = await User.findAll({
+                where: { role: 'walikelas' },
+                attributes: ['id', 'name', 'email'],
+                order: [['name', 'ASC']]
+            });
 
             res.status(200).json({
                 code: 200,
                 status: "success",
                 message: "Available filters retrieved successfully",
                 data: {
-                    years: years.sort((a, b) => b - a),
-                    semesters: semesters.sort(),
-                    classes: classes.sort(),
-                    prestasi: prestasiCategories.sort(),
+                    years: years.map(item => item.tahun),
+                    semesters: semesters.map(item => item.semester),
+                    classes: classes.map(item => item.kelas),
+                    prestasi: prestasiCategories.map(item => item.prestasi),
                     walikelas: walikelasList.map(wali => ({
-                        id: wali._id,
+                        id: wali.id,
                         name: wali.name,
                         email: wali.email
                     }))
@@ -690,19 +714,25 @@ router.get(
                 });
             }
 
-            let filter = { walikelas_id: walikelas_id };
+            let whereCondition = { walikelas_id: walikelas_id };
 
             // Tambahkan filter jika ada
-            if (tahun) filter.tahun = parseInt(tahun);
-            if (semester) filter.semester = semester;
-            if (kelas) filter.kelas = kelas;
+            if (tahun) whereCondition.tahun = parseInt(tahun);
+            if (semester) whereCondition.semester = semester;
+            if (kelas) whereCondition.kelas = kelas;
 
-            const siswaList = await Siswa.find(filter)
-                .sort({
-                    kelas: 1,
-                    name: 1
-                })
-                .populate("walikelas_id");
+            const siswaList = await Siswa.findAll({
+                where: whereCondition,
+                order: [
+                    ['kelas', 'ASC'],
+                    ['name', 'ASC']
+                ],
+                include: [{
+                    model: User,
+                    as: 'walikelas',
+                    attributes: ['id', 'name', 'email']
+                }]
+            });
 
             // Hitung statistik sederhana
             const totalSiswa = siswaList.length;
@@ -719,6 +749,9 @@ router.get(
                 return acc;
             }, {});
 
+            // Daftar kelas unik
+            const kelasUnik = [...new Set(siswaList.map(siswa => siswa.kelas))];
+
             res.status(200).json({
                 code: 200,
                 status: "success",
@@ -728,21 +761,21 @@ router.get(
                         totalSiswa,
                         avgNilai,
                         avgKehadiran,
-                        kelas: [...new Set(siswaList.map(siswa => siswa.kelas))] // Daftar kelas unik
+                        kelas: kelasUnik
                     },
                     prestasiDistribution,
                     siswa: siswaList.map((siswa) => ({
-                        id: siswa._id,
+                        id: siswa.id,
                         name: siswa.name,
                         kelas: siswa.kelas,
                         tahun: siswa.tahun,
                         nilai: siswa.nilai,
                         kehadiran: siswa.kehadiran,
                         prestasi: siswa.prestasi,
-                        walikelas: siswa.walikelas_id ? {
-                            id: siswa.walikelas_id._id,
-                            name: siswa.walikelas_id.name,
-                            email: siswa.walikelas_id.email
+                        walikelas: siswa.walikelas ? {
+                            id: siswa.walikelas.id,
+                            name: siswa.walikelas.name,
+                            email: siswa.walikelas.email
                         } : null,
                         semester: siswa.semester,
                         createdAt: siswa.createdAt,
@@ -766,8 +799,8 @@ router.get(
     "/:id",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
-        // Validasi ObjectId
-        if (!isValidObjectId(req.params.id)) {
+        // Validasi UUID
+        if (!isValidUUID(req.params.id)) {
             return res.status(400).json({
                 code: 400,
                 status: "error",
@@ -775,7 +808,13 @@ router.get(
             });
         }
 
-        const siswa = await Siswa.findById(req.params.id).populate("walikelas_id");
+        const siswa = await Siswa.findByPk(req.params.id, {
+            include: [{
+                model: User,
+                as: 'walikelas',
+                attributes: ['id', 'name', 'email']
+            }]
+        });
 
         if (!siswa) {
             return res.status(404).json({
@@ -789,17 +828,17 @@ router.get(
             code: 200,
             status: "success",
             data: {
-                id: siswa._id,
+                id: siswa.id,
                 name: siswa.name,
                 kelas: siswa.kelas,
                 tahun: siswa.tahun,
                 nilai: siswa.nilai,
                 kehadiran: siswa.kehadiran,
                 prestasi: siswa.prestasi,
-                walikelas: siswa.walikelas_id ? {
-                    id: siswa.walikelas_id._id,
-                    name: siswa.walikelas_id.name,
-                    email: siswa.walikelas_id.email
+                walikelas: siswa.walikelas ? {
+                    id: siswa.walikelas.id,
+                    name: siswa.walikelas.name,
+                    email: siswa.walikelas.email
                 } : null,
                 semester: siswa.semester,
                 createdAt: siswa.createdAt,
@@ -814,8 +853,8 @@ router.put(
     "/:id",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
-        // Validasi ObjectId
-        if (!isValidObjectId(req.params.id)) {
+        // Validasi UUID
+        if (!isValidUUID(req.params.id)) {
             return res.status(400).json({
                 code: 400,
                 status: "error",
@@ -824,7 +863,7 @@ router.put(
         }
 
         // Validasi walikelas_id jika ada di body
-        if (req.body.walikelas_id && !isValidObjectId(req.body.walikelas_id)) {
+        if (req.body.walikelas_id && !isValidUUID(req.body.walikelas_id)) {
             return res.status(400).json({
                 code: 400,
                 status: "error",
@@ -845,7 +884,7 @@ router.put(
         const { name, kelas, tahun, nilai, kehadiran, walikelas_id, semester } = req.body;
 
         // Cek apakah siswa exists
-        const existingSiswa = await Siswa.findById(req.params.id);
+        const existingSiswa = await Siswa.findByPk(req.params.id);
         if (!existingSiswa) {
             return res.status(404).json({
                 code: 404,
@@ -877,28 +916,35 @@ router.put(
             updatedData.prestasi = prestasi;
         }
 
-        const siswa = await Siswa.findByIdAndUpdate(
-            req.params.id,
-            updatedData,
-            { new: true }
-        ).populate("walikelas_id");
+        await Siswa.update(updatedData, {
+            where: { id: req.params.id }
+        });
+
+        // Get updated data
+        const siswa = await Siswa.findByPk(req.params.id, {
+            include: [{
+                model: User,
+                as: 'walikelas',
+                attributes: ['id', 'name', 'email']
+            }]
+        });
 
         res.status(200).json({
             code: 200,
             status: "success",
             message: "Siswa updated successfully",
             data: {
-                id: siswa._id,
+                id: siswa.id,
                 name: siswa.name,
                 kelas: siswa.kelas,
                 tahun: siswa.tahun,
                 nilai: siswa.nilai,
                 kehadiran: siswa.kehadiran,
                 prestasi: siswa.prestasi,
-                walikelas: siswa.walikelas_id ? {
-                    id: siswa.walikelas_id._id,
-                    name: siswa.walikelas_id.name,
-                    email: siswa.walikelas_id.email
+                walikelas: siswa.walikelas ? {
+                    id: siswa.walikelas.id,
+                    name: siswa.walikelas.name,
+                    email: siswa.walikelas.email
                 } : null,
                 semester: siswa.semester,
                 createdAt: siswa.createdAt,
@@ -913,8 +959,8 @@ router.delete(
     "/:id",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
-        // Validasi ObjectId
-        if (!isValidObjectId(req.params.id)) {
+        // Validasi UUID
+        if (!isValidUUID(req.params.id)) {
             return res.status(400).json({
                 code: 400,
                 status: "error",
@@ -922,9 +968,11 @@ router.delete(
             });
         }
 
-        const siswa = await Siswa.findByIdAndDelete(req.params.id);
+        const deleted = await Siswa.destroy({
+            where: { id: req.params.id }
+        });
 
-        if (!siswa) {
+        if (!deleted) {
             return res.status(404).json({
                 code: 404,
                 status: "error",
@@ -994,63 +1042,56 @@ router.get(
     catchAsyncErrors(async (req, res) => {
         const { tahun, semester } = req.query;
 
-        let matchStage = {};
-        if (tahun) matchStage.tahun = parseInt(tahun);
-        if (semester) matchStage.semester = semester;
+        let whereCondition = {};
+        if (tahun) whereCondition.tahun = parseInt(tahun);
+        if (semester) whereCondition.semester = semester;
 
-        const stats = await Siswa.aggregate([
-            { $match: matchStage },
-            {
-                $group: {
-                    _id: null,
-                    totalSiswa: { $sum: 1 },
-                    avgNilai: { $avg: "$nilai" },
-                    avgKehadiran: { $avg: "$kehadiran" },
-                    prestasiCount: {
-                        $push: "$prestasi"
-                    }
-                }
-            },
-            {
-                $project: {
-                    totalSiswa: 1,
-                    avgNilai: { $round: ["$avgNilai", 2] },
-                    avgKehadiran: { $round: ["$avgKehadiran", 2] },
-                    prestasiDistribution: {
-                        $arrayToObject: {
-                            $map: {
-                                input: { $setUnion: ["$prestasiCount", []] },
-                                as: "prestasi",
-                                in: {
-                                    k: "$$prestasi",
-                                    v: {
-                                        $size: {
-                                            $filter: {
-                                                input: "$prestasiCount",
-                                                as: "p",
-                                                cond: { $eq: ["$$p", "$$prestasi"] }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        ]);
+        const stats = await Siswa.findAll({
+            where: whereCondition,
+            attributes: [
+                [Sequelize.fn('COUNT', Sequelize.col('id')), 'totalSiswa'],
+                [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
+                [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran'],
+                [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('nilai')), 2), 'avgNilaiRounded'],
+                [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('kehadiran')), 2), 'avgKehadiranRounded']
+            ],
+            raw: true
+        });
+
+        // Hitung distribusi prestasi
+        const prestasiStats = await Siswa.findAll({
+            where: whereCondition,
+            attributes: [
+                'prestasi',
+                [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+            ],
+            group: ['prestasi'],
+            raw: true
+        });
 
         const result = stats.length > 0 ? stats[0] : {
             totalSiswa: 0,
             avgNilai: 0,
             avgKehadiran: 0,
-            prestasiDistribution: {}
+            avgNilaiRounded: 0,
+            avgKehadiranRounded: 0
         };
+
+        // Format prestasi distribution
+        const prestasiDistribution = {};
+        prestasiStats.forEach(stat => {
+            prestasiDistribution[stat.prestasi] = parseInt(stat.count);
+        });
 
         res.status(200).json({
             code: 200,
             status: "success",
-            data: result
+            data: {
+                totalSiswa: parseInt(result.totalSiswa) || 0,
+                avgNilai: parseFloat(result.avgNilaiRounded) || 0,
+                avgKehadiran: parseFloat(result.avgKehadiranRounded) || 0,
+                prestasiDistribution
+            }
         });
     })
 );
