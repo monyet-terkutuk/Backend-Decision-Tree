@@ -27,7 +27,7 @@ const schema = {
 // Helper function untuk memanggil API prediksi
 const getPrediction = async (nilai_akademik, total_kehadiran) => {
     try {
-        const response = await axios.post("http://127.0.0.1:5000/predict", {
+        const response = await axios.post("https://rika111.pythonanywhere.com/predict", {
             nilai_akademik: nilai_akademik,
             total_kehadiran: total_kehadiran
         });
