@@ -3,24 +3,24 @@ const { Sequelize } = require('sequelize');
 const mysql2 = require('mysql2'); // 👈 tambahkan ini
 
 const sequelize = new Sequelize(
-    'freedb_desicion-tree',
-    'freedb_blackidut',
-    '$fJx99BM6p?R!$V',
+    process.env.DB_NAME,
+    process.env.DB_USER,
+    process.env.DB_PASSWORD,
     {
-        host: 'sql.freedb.tech',
-        port: 3306,
+        host: process.env.DB_HOST,
         dialect: 'mysql',
-        dialectModule: mysql2, // 👈 tambahkan ini supaya Sequelize pakai mysql2 secara eksplisit
-        logging: false,
         pool: {
-            max: 5,
-            min: 0,
-            acquire: 30000,
-            idle: 10000
+            max: 5,           // Maximum number of connection in pool
+            min: 0,           // Minimum number of connection in pool
+            acquire: 30000,   // The maximum time, in milliseconds, that pool will try to get connection before throwing error
+            idle: 10000       // The maximum time, in milliseconds, that a connection can be idle before being released
         },
-        define: {
-            timestamps: true,
-            underscored: false
+        retry: {
+            max: 3            // Maximum number of retries
+        },
+        logging: false,     // Disable logging to reduce queries
+        dialectOptions: {
+            connectTimeout: 60000 // Increase timeout
         }
     }
 );

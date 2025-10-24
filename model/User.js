@@ -1,4 +1,4 @@
-// model/User.js
+// models/User.js
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
@@ -27,14 +27,11 @@ const User = sequelize.define('User', {
   },
   role: {
     type: DataTypes.ENUM('walikelas', 'operator'),
-    defaultValue: 'walikelas',
     allowNull: false
   }
 }, {
   tableName: 'users',
   timestamps: true,
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt'
 });
 
 module.exports = User;

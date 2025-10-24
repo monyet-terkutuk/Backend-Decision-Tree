@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const User = require("../model/User");
+const WaliKelas = require("../model/Walikelas"); // Import model WaliKelas
 const bcrypt = require('bcrypt');
 const jwt = require("jsonwebtoken");
 const Validator = require("fastest-validator");
@@ -21,7 +22,10 @@ router.post("/register", catchAsyncErrors(async (req, res, next) => {
     email: { type: "email", empty: false },
     password: { type: "string", min: 6, empty: false },
     phone: { type: "string", optional: true, max: 15 },
-    role: { type: "string", enum: ["walikelas", "operator"], empty: false }
+    role: { type: "string", enum: ["walikelas", "operator"], empty: false },
+    // Field tambahan untuk WaliKelas
+    sekolah: { type: "string", optional: true, max: 255 },
+    jurusan: { type: "string", optional: true, max: 255 }
   };
 
   const validation = v.validate(req.body, schema);
@@ -35,7 +39,7 @@ router.post("/register", catchAsyncErrors(async (req, res, next) => {
     });
   }
 
-  const { name, email, password, phone, role } = req.body;
+  const { name, email, password, phone, role, sekolah, jurusan } = req.body;
 
   // Check if email already exists
   const emailUsed = await User.findOne({ where: { email } });
@@ -50,28 +54,71 @@ router.post("/register", catchAsyncErrors(async (req, res, next) => {
   // Hash password
   const hashedPassword = await bcrypt.hash(password, 10);
 
-  // Create user
-  const user = await User.create({
-    name,
-    email,
-    password: hashedPassword,
-    phone: phone || "",
-    role
-  });
+  // Start transaction untuk memastikan konsistensi data
+  const transaction = await User.sequelize.transaction();
 
-  return res.status(201).json({
-    code: 201,
-    status: "success",
-    message: "User registered successfully",
-    data: {
+  try {
+    // Create user
+    const user = await User.create({
+      name,
+      email,
+      password: hashedPassword,
+      phone: phone || "",
+      role
+    }, { transaction });
+
+    let waliKelasData = null;
+
+    // Jika role adalah walikelas, buat entri di tabel WaliKelas
+    if (role === 'walikelas') {
+      waliKelasData = await WaliKelas.create({
+        user_id: user.id,
+        sekolah: sekolah || null,
+        jurusan: jurusan || null
+      }, { transaction });
+    }
+
+    // Commit transaction
+    await transaction.commit();
+
+    // Prepare response data
+    const responseData = {
       id: user.id,
       name: user.name,
       email: user.email,
       phone: user.phone,
       role: user.role,
       createdAt: user.createdAt
-    },
-  });
+    };
+
+    // Tambahkan data WaliKelas jika ada
+    if (waliKelasData) {
+      responseData.walikelas = {
+        id: waliKelasData.id,
+        sekolah: waliKelasData.sekolah,
+        jurusan: waliKelasData.jurusan
+      };
+    }
+
+    return res.status(201).json({
+      code: 201,
+      status: "success",
+      message: "User registered successfully",
+      data: responseData,
+    });
+
+  } catch (error) {
+    // Rollback transaction jika ada error
+    await transaction.rollback();
+
+    console.error("Registration error:", error);
+    return res.status(500).json({
+      code: 500,
+      status: "error",
+      message: "Terjadi kesalahan saat registrasi user",
+      error: error.message,
+    });
+  }
 }));
 
 /**
@@ -96,8 +143,16 @@ router.post("/login", catchAsyncErrors(async (req, res, next) => {
     });
   }
 
-  // Find user by email
-  const user = await User.findOne({ where: { email } });
+  // Find user by email dengan include WaliKelas
+  const user = await User.findOne({
+    where: { email },
+    include: [{
+      model: WaliKelas,
+      as: 'walikelas',
+      attributes: ['id', 'sekolah', 'jurusan']
+    }]
+  });
+
   if (!user) {
     return res.status(401).json({
       code: 401,
@@ -116,32 +171,52 @@ router.post("/login", catchAsyncErrors(async (req, res, next) => {
     });
   }
 
+  // Prepare user data for token
+  const userData = {
+    id: user.id,
+    role: user.role,
+    name: user.name,
+    email: user.email
+  };
+
+  // Add WaliKelas data if exists
+  if (user.walikelas) {
+    userData.walikelas_id = user.walikelas.id;
+  }
+
   // Generate JWT token
   const token = jwt.sign(
-    {
-      id: user.id,
-      role: user.role,
-      name: user.name,
-      email: user.email
-    },
+    userData,
     process.env.JWT_SECRET_KEY,
     { expiresIn: "24h" }
   );
+
+  // Prepare response data
+  const responseData = {
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role
+    },
+    token,
+  };
+
+  // Add WaliKelas data to response if exists
+  if (user.walikelas) {
+    responseData.user.walikelas = {
+      id: user.walikelas.id,
+      sekolah: user.walikelas.sekolah,
+      jurusan: user.walikelas.jurusan
+    };
+  }
 
   return res.status(200).json({
     code: 200,
     status: "success",
     message: "Login successful",
-    data: {
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role
-      },
-      token,
-    },
+    data: responseData,
   });
 }));
 
@@ -154,7 +229,12 @@ router.get(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     const user = await User.findByPk(req.user.id, {
-      attributes: { exclude: ['password'] }
+      attributes: { exclude: ['password'] },
+      include: [{
+        model: WaliKelas,
+        as: 'walikelas',
+        attributes: ['id', 'sekolah', 'jurusan']
+      }]
     });
 
     if (!user) {
@@ -165,19 +245,31 @@ router.get(
       });
     }
 
+    // Prepare response data
+    const responseData = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+
+    // Add WaliKelas data if exists
+    if (user.walikelas) {
+      responseData.walikelas = {
+        id: user.walikelas.id,
+        sekolah: user.walikelas.sekolah,
+        jurusan: user.walikelas.jurusan
+      };
+    }
+
     res.status(200).json({
       code: 200,
       status: "success",
       message: "Profile retrieved successfully",
-      data: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt
-      },
+      data: responseData,
     });
   })
 );
@@ -193,6 +285,9 @@ router.put(
     const schema = {
       name: { type: "string", optional: true, max: 255 },
       phone: { type: "string", optional: true, max: 15 },
+      // Field untuk WaliKelas
+      sekolah: { type: "string", optional: true, max: 255 },
+      jurusan: { type: "string", optional: true, max: 255 }
     };
 
     const validation = v.validate(req.body, schema);
@@ -205,33 +300,382 @@ router.put(
       });
     }
 
-    const { name, phone } = req.body;
-    const updateData = {};
+    const { name, phone, sekolah, jurusan } = req.body;
+    const transaction = await User.sequelize.transaction();
 
-    if (name) updateData.name = name;
-    if (phone) updateData.phone = phone;
+    try {
+      // Update user data
+      const updateData = {};
+      if (name) updateData.name = name;
+      if (phone) updateData.phone = phone;
 
-    await User.update(updateData, {
-      where: { id: req.user.id }
-    });
+      if (Object.keys(updateData).length > 0) {
+        await User.update(updateData, {
+          where: { id: req.user.id },
+          transaction
+        });
+      }
 
-    // Get updated user data
-    const user = await User.findByPk(req.user.id, {
-      attributes: { exclude: ['password'] }
-    });
+      // Update WaliKelas data jika user adalah walikelas
+      if (req.user.role === 'walikelas' && (sekolah !== undefined || jurusan !== undefined)) {
+        const waliKelasUpdateData = {};
+        if (sekolah !== undefined) waliKelasUpdateData.sekolah = sekolah;
+        if (jurusan !== undefined) waliKelasUpdateData.jurusan = jurusan;
 
-    res.status(200).json({
-      code: 200,
-      status: "success",
-      message: "Profile updated successfully",
-      data: {
+        await WaliKelas.update(waliKelasUpdateData, {
+          where: { user_id: req.user.id },
+          transaction
+        });
+      }
+
+      await transaction.commit();
+
+      // Get updated user data
+      const user = await User.findByPk(req.user.id, {
+        attributes: { exclude: ['password'] },
+        include: [{
+          model: WaliKelas,
+          as: 'walikelas',
+          attributes: ['id', 'sekolah', 'jurusan']
+        }]
+      });
+
+      // Prepare response data
+      const responseData = {
         id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
         role: user.role,
         updatedAt: user.updatedAt
-      },
+      };
+
+      // Add WaliKelas data if exists
+      if (user.walikelas) {
+        responseData.walikelas = {
+          id: user.walikelas.id,
+          sekolah: user.walikelas.sekolah,
+          jurusan: user.walikelas.jurusan
+        };
+      }
+
+      res.status(200).json({
+        code: 200,
+        status: "success",
+        message: "Profile updated successfully",
+        data: responseData,
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      console.error("Profile update error:", error);
+      return res.status(500).json({
+        code: 500,
+        status: "error",
+        message: "Terjadi kesalahan saat update profile",
+        error: error.message,
+      });
+    }
+  })
+);
+
+/**
+ * @route   PUT /:id
+ * @desc    Update user by ID (Admin only)
+ */
+router.put(
+  "/:id",
+  isAuthenticated,
+  catchAsyncErrors(async (req, res, next) => {
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
+
+    const schema = {
+      name: { type: "string", optional: true, max: 255 },
+      email: { type: "email", optional: true },
+      phone: { type: "string", optional: true, max: 15 },
+      role: { type: "string", optional: true, enum: ["walikelas", "operator"] },
+      // Field untuk WaliKelas
+      sekolah: { type: "string", optional: true, max: 255 },
+      jurusan: { type: "string", optional: true, max: 255 }
+    };
+
+    const validation = v.validate(req.body, schema);
+    if (validation !== true) {
+      return res.status(400).json({
+        code: 400,
+        status: "error",
+        message: "Validation failed",
+        data: validation,
+      });
+    }
+
+    const { name, email, phone, role, sekolah, jurusan } = req.body;
+
+    // Check if user exists
+    const existingUser = await User.findByPk(req.params.id, {
+      include: [{
+        model: WaliKelas,
+        as: 'walikelas'
+      }]
+    });
+
+    if (!existingUser) {
+      return res.status(404).json({
+        code: 404,
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    // Check if email already exists (excluding current user)
+    if (email) {
+      const userWithEmail = await User.findOne({
+        where: {
+          email,
+          id: { [Op.ne]: req.params.id }
+        }
+      });
+      if (userWithEmail) {
+        return res.status(400).json({
+          code: 400,
+          status: "error",
+          message: "Email already exists",
+        });
+      }
+    }
+
+    const transaction = await User.sequelize.transaction();
+
+    try {
+      // Update user data
+      const updateData = {};
+      if (name) updateData.name = name;
+      if (email) updateData.email = email;
+      if (phone) updateData.phone = phone;
+      if (role) updateData.role = role;
+
+      if (Object.keys(updateData).length > 0) {
+        await User.update(updateData, {
+          where: { id: req.params.id },
+          transaction
+        });
+      }
+
+      // Handle WaliKelas data based on role change
+      if (role) {
+        if (role === 'walikelas') {
+          // Jika role diubah menjadi walikelas, buat atau update WaliKelas
+          if (existingUser.walikelas) {
+            // Update existing WaliKelas
+            const waliKelasUpdateData = {};
+            if (sekolah !== undefined) waliKelasUpdateData.sekolah = sekolah;
+            if (jurusan !== undefined) waliKelasUpdateData.jurusan = jurusan;
+
+            await WaliKelas.update(waliKelasUpdateData, {
+              where: { user_id: req.params.id },
+              transaction
+            });
+          } else {
+            // Create new WaliKelas
+            await WaliKelas.create({
+              user_id: req.params.id,
+              sekolah: sekolah || null,
+              jurusan: jurusan || null
+            }, { transaction });
+          }
+        } else if (role === 'operator' && existingUser.walikelas) {
+          // Jika role diubah menjadi operator, hapus WaliKelas
+          await WaliKelas.destroy({
+            where: { user_id: req.params.id },
+            transaction
+          });
+        }
+      } else if (existingUser.role === 'walikelas' && (sekolah !== undefined || jurusan !== undefined)) {
+        // Update WaliKelas data for existing walikelas
+        const waliKelasUpdateData = {};
+        if (sekolah !== undefined) waliKelasUpdateData.sekolah = sekolah;
+        if (jurusan !== undefined) waliKelasUpdateData.jurusan = jurusan;
+
+        await WaliKelas.update(waliKelasUpdateData, {
+          where: { user_id: req.params.id },
+          transaction
+        });
+      }
+
+      await transaction.commit();
+
+      // Get updated user data
+      const user = await User.findByPk(req.params.id, {
+        attributes: { exclude: ['password'] },
+        include: [{
+          model: WaliKelas,
+          as: 'walikelas',
+          attributes: ['id', 'sekolah', 'jurusan']
+        }]
+      });
+
+      // Prepare response data
+      const responseData = {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        updatedAt: user.updatedAt
+      };
+
+      // Add WaliKelas data if exists
+      if (user.walikelas) {
+        responseData.walikelas = {
+          id: user.walikelas.id,
+          sekolah: user.walikelas.sekolah,
+          jurusan: user.walikelas.jurusan
+        };
+      }
+
+      res.status(200).json({
+        code: 200,
+        status: "success",
+        message: "User updated successfully",
+        data: responseData,
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      console.error("User update error:", error);
+      return res.status(500).json({
+        code: 500,
+        status: "error",
+        message: "Terjadi kesalahan saat update user",
+        error: error.message,
+      });
+    }
+  })
+);
+
+/**
+ * @route   GET /list
+ * @desc    Get all users (Admin only)
+ */
+router.get(
+  "/list",
+  isAuthenticated,
+  catchAsyncErrors(async (req, res, next) => {
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
+
+    const users = await User.findAll({
+      attributes: { exclude: ['password'] },
+      include: [{
+        model: WaliKelas,
+        as: 'walikelas',
+        attributes: ['id', 'sekolah', 'jurusan']
+      }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    res.status(200).json({
+      code: 200,
+      status: "success",
+      message: "Users retrieved successfully",
+      data: users.map(user => {
+        const userData = {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        };
+
+        // Add WaliKelas data if exists
+        if (user.walikelas) {
+          userData.walikelas = {
+            id: user.walikelas.id,
+            sekolah: user.walikelas.sekolah,
+            jurusan: user.walikelas.jurusan
+          };
+        }
+
+        return userData;
+      }),
+    });
+  })
+);
+
+/**
+ * @route   GET /:id
+ * @desc    Get user by ID (Admin only)
+ */
+router.get(
+  "/:id",
+  isAuthenticated,
+  catchAsyncErrors(async (req, res, next) => {
+    // Check if user is admin/operator
+    if (req.user.role !== 'operator') {
+      return res.status(403).json({
+        code: 403,
+        status: "error",
+        message: "Access denied. Admin role required.",
+      });
+    }
+
+    const user = await User.findByPk(req.params.id, {
+      attributes: { exclude: ['password'] },
+      include: [{
+        model: WaliKelas,
+        as: 'walikelas',
+        attributes: ['id', 'sekolah', 'jurusan']
+      }]
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        code: 404,
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    // Prepare response data
+    const responseData = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+
+    // Add WaliKelas data if exists
+    if (user.walikelas) {
+      responseData.walikelas = {
+        id: user.walikelas.id,
+        sekolah: user.walikelas.sekolah,
+        jurusan: user.walikelas.jurusan
+      };
+    }
+
+    res.status(200).json({
+      code: 200,
+      status: "success",
+      message: "User retrieved successfully",
+      data: responseData,
     });
   })
 );

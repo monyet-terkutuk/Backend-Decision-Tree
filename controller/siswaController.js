@@ -1,44 +1,25 @@
+// controllers/siswaController.js
 const express = require("express");
 const router = express.Router();
 const Siswa = require("../model/Siswa");
 const User = require("../model/User");
+const WaliKelas = require("../model/Walikelas");
 const Validator = require("fastest-validator");
 const v = new Validator();
 const catchAsyncErrors = require("../middleware/catchAsyncErrors");
-const { isAuthenticated, isAdmin } = require("../middleware/auth");
-const axios = require("axios");
+const { isAuthenticated } = require("../middleware/auth");
 const { Op, Sequelize } = require("sequelize");
 const { v4: uuidv4 } = require('uuid');
 
 const multer = require('multer');
 const xlsx = require('xlsx');
-const path = require('path');
 
 // Validation schema
 const schema = {
     name: { type: "string", empty: false },
     kelas: { type: "string", empty: false },
     tahun: { type: "number", integer: true, positive: true },
-    nilai: { type: "number", integer: true, min: 0, max: 100 },
-    kehadiran: { type: "number", integer: true, min: 0, max: 365 },
-    prestasi: { type: "string", optional: true },
-    walikelas_id: { type: "string", empty: false },
-    semester: { type: "string", empty: false }
-};
-
-// Helper function untuk memanggil API prediksi
-const getPrediction = async (nilai_akademik, total_kehadiran) => {
-    try {
-        const response = await axios.post("https://rika111.pythonanywhere.com/predict", {
-            nilai_akademik: nilai_akademik,
-            total_kehadiran: total_kehadiran
-        });
-
-        return response.data.prediksi_prestasi;
-    } catch (error) {
-        console.error("Error calling prediction API:", error.message);
-        return null;
-    }
+    semester: { type: "string", enum: ["ganjil", "genap"] }
 };
 
 // Helper function untuk validasi UUID
@@ -47,16 +28,40 @@ const isValidUUID = (id) => {
     return uuidRegex.test(id);
 };
 
+// Helper function untuk mendapatkan WaliKelas ID
+const getWaliKelasId = async (userId) => {
+    const waliKelas = await WaliKelas.findOne({
+        where: { user_id: userId }
+    });
+    return waliKelas ? waliKelas.id : null;
+};
+
+// Helper function untuk validasi dan parse tahun
+const parseTahun = (tahun) => {
+    if (!tahun) return null;
+    const tahunNum = parseInt(tahun);
+    return isNaN(tahunNum) ? null : tahunNum;
+};
+
+// Helper function untuk validasi dan parse pagination
+const parsePagination = (page, limit) => {
+    const pageNumber = parseInt(page) || 1;
+    const pageSize = parseInt(limit) || 10;
+
+    return {
+        pageNumber: Math.max(1, pageNumber),
+        pageSize: Math.max(1, Math.min(100, pageSize)) // Limit max 100 per page
+    };
+};
+
 // Konfigurasi multer untuk upload file
 const upload = multer({
-    storage: multer.memoryStorage(), // Gunakan memory storage
+    storage: multer.memoryStorage(),
     fileFilter: function (req, file, cb) {
         const allowedMimeTypes = [
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'application/vnd.ms-excel',
-            'application/octet-stream'
+            'application/vnd.ms-excel'
         ];
-
         if (allowedMimeTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
@@ -64,9 +69,116 @@ const upload = multer({
         }
     },
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB
+        fileSize: 5 * 1024 * 1024
     }
 });
+
+// ✅ Create Siswa
+router.post(
+    "",
+    isAuthenticated,
+    catchAsyncErrors(async (req, res) => {
+        try {
+            const validation = v.validate(req.body, schema);
+            if (validation !== true) {
+                return res.status(400).json({
+                    code: 400,
+                    status: "error",
+                    message: "Validation failed",
+                    data: validation,
+                });
+            }
+
+            const { name, kelas, tahun, semester } = req.body;
+
+            // Dapatkan walikelas_id berdasarkan user yang login
+            const walikelas_id = await getWaliKelasId(req.user.id);
+
+            if (!walikelas_id) {
+                return res.status(404).json({
+                    code: 404,
+                    status: "error",
+                    message: "Data wali kelas tidak ditemukan untuk user ini",
+                });
+            }
+
+            // Cek duplikat siswa
+            const existingSiswa = await Siswa.findOne({
+                where: {
+                    name,
+                    kelas,
+                    tahun,
+                    semester,
+                    walikelas_id
+                }
+            });
+
+            if (existingSiswa) {
+                return res.status(400).json({
+                    code: 400,
+                    status: "error",
+                    message: "Siswa dengan data yang sama sudah ada",
+                });
+            }
+
+            // Buat siswa
+            const siswa = await Siswa.create({
+                id: uuidv4(),
+                name,
+                kelas,
+                tahun,
+                semester,
+                walikelas_id
+            });
+
+            // Get data dengan include yang benar
+            const siswaWithDetails = await Siswa.findByPk(siswa.id, {
+                include: [{
+                    model: WaliKelas,
+                    as: 'walikelas',
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['id', 'name', 'email']
+                    }]
+                }]
+            });
+
+            res.status(201).json({
+                code: 201,
+                status: "success",
+                message: "Siswa created successfully",
+                data: {
+                    id: siswaWithDetails.id,
+                    name: siswaWithDetails.name,
+                    kelas: siswaWithDetails.kelas,
+                    tahun: siswaWithDetails.tahun,
+                    semester: siswaWithDetails.semester,
+                    walikelas: siswaWithDetails.walikelas ? {
+                        id: siswaWithDetails.walikelas.id,
+                        user: {
+                            id: siswaWithDetails.walikelas.user.id,
+                            name: siswaWithDetails.walikelas.user.name,
+                            email: siswaWithDetails.walikelas.user.email
+                        },
+                        sekolah: siswaWithDetails.walikelas.sekolah,
+                        jurusan: siswaWithDetails.walikelas.jurusan
+                    } : null,
+                    createdAt: siswaWithDetails.createdAt,
+                    updatedAt: siswaWithDetails.updatedAt
+                },
+            });
+        } catch (error) {
+            console.error("Error in create siswa:", error);
+            res.status(500).json({
+                code: 500,
+                status: "error",
+                message: "Terjadi kesalahan saat membuat siswa",
+                error: error.message
+            });
+        }
+    })
+);
 
 // ✅ Import Siswa dari Excel
 router.post(
@@ -83,13 +195,22 @@ router.post(
                 });
             }
 
-            // Gunakan buffer langsung tanpa menyimpan file
+            // Dapatkan walikelas_id berdasarkan user yang login
+            const walikelas_id = await getWaliKelasId(req.user.id);
+
+            if (!walikelas_id) {
+                return res.status(404).json({
+                    code: 404,
+                    status: "error",
+                    message: "Data wali kelas tidak ditemukan untuk user ini",
+                });
+            }
+
             const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
             const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
             const data = xlsx.utils.sheet_to_json(worksheet);
 
-            // Validasi struktur file
             if (data.length === 0) {
                 return res.status(400).json({
                     code: 400,
@@ -98,8 +219,7 @@ router.post(
                 });
             }
 
-            // Validasi kolom required
-            const requiredColumns = ['Nama Siswa', 'Total Kehadiran', 'Nilai Akademik', 'Kelas', 'Semester', 'Tahun'];
+            const requiredColumns = ['Nama Siswa', 'Kelas', 'Semester', 'Tahun'];
             const firstRow = data[0];
             const missingColumns = requiredColumns.filter(col => !firstRow.hasOwnProperty(col));
 
@@ -118,78 +238,56 @@ router.post(
                 errors: []
             };
 
-            // Proses setiap baris data
             for (let i = 0; i < data.length; i++) {
                 const row = data[i];
                 const rowNumber = i + 2;
 
                 try {
-                    // Validasi data
                     if (!row['Nama Siswa'] || !row['Kelas'] || !row['Semester'] || !row['Tahun']) {
                         results.errors.push(`Baris ${rowNumber}: Data required tidak lengkap`);
                         results.failed++;
                         continue;
                     }
 
-                    // Validasi tipe data
-                    const kehadiran = parseInt(row['Total Kehadiran']);
-                    const nilai = parseInt(row['Nilai Akademik']);
-                    const tahun = parseInt(row['Tahun']);
-
-                    if (isNaN(kehadiran) || isNaN(nilai) || isNaN(tahun)) {
-                        results.errors.push(`Baris ${rowNumber}: Data numerik tidak valid`);
+                    const tahun = parseTahun(row['Tahun']);
+                    if (tahun === null) {
+                        results.errors.push(`Baris ${rowNumber}: Tahun harus berupa angka`);
                         results.failed++;
                         continue;
                     }
 
-                    if (nilai < 0 || nilai > 100) {
-                        results.errors.push(`Baris ${rowNumber}: Nilai akademik harus antara 0-100`);
+                    const semester = row['Semester'].toLowerCase();
+                    if (!['ganjil', 'genap'].includes(semester)) {
+                        results.errors.push(`Baris ${rowNumber}: Semester harus 'ganjil' atau 'genap'`);
                         results.failed++;
                         continue;
                     }
 
-                    if (kehadiran < 0 || kehadiran > 365) {
-                        results.errors.push(`Baris ${rowNumber}: Total kehadiran harus antara 0-365`);
-                        results.failed++;
-                        continue;
-                    }
-
-                    // Cek duplikat berdasarkan nama, kelas, tahun, semester
+                    // Cek duplikat
                     const existingSiswa = await Siswa.findOne({
                         where: {
                             name: row['Nama Siswa'],
                             kelas: row['Kelas'],
                             tahun: tahun,
-                            semester: row['Semester']
+                            semester: semester,
+                            walikelas_id
                         }
                     });
 
                     if (existingSiswa) {
-                        results.errors.push(`Baris ${rowNumber}: Data siswa sudah ada (${row['Nama Siswa']} - ${row['Kelas']} - ${row['Semester']} ${tahun})`);
+                        results.errors.push(`Baris ${rowNumber}: Data siswa sudah ada`);
                         results.failed++;
                         continue;
                     }
 
-                    // Dapatkan prediksi prestasi dari API
-                    let prestasi;
-                    try {
-                        const prediction = await getPrediction(nilai, kehadiran);
-                        prestasi = prediction || "Cukup";
-                    } catch (error) {
-                        prestasi = "Cukup";
-                    }
-
-                    // Buat data siswa dengan UUID
-                    const siswa = await Siswa.create({
+                    // Buat data siswa
+                    await Siswa.create({
                         id: uuidv4(),
                         name: row['Nama Siswa'],
                         kelas: row['Kelas'],
                         tahun: tahun,
-                        nilai: nilai,
-                        kehadiran: kehadiran,
-                        prestasi: prestasi,
-                        walikelas_id: req.user.id,
-                        semester: row['Semester']
+                        semester: semester,
+                        walikelas_id
                     });
 
                     results.success++;
@@ -200,7 +298,6 @@ router.post(
                 }
             }
 
-            // Response hasil import (TIDAK ADA HAPUS FILE LAGI)
             res.status(200).json({
                 code: 200,
                 status: "success",
@@ -214,6 +311,7 @@ router.post(
             });
 
         } catch (error) {
+            console.error("Error in import siswa:", error);
             return res.status(500).json({
                 code: 500,
                 status: "error",
@@ -224,262 +322,47 @@ router.post(
     })
 );
 
-// ✅ Download Template Excel (Tetap sama)
-router.get(
-    "/template",
-    isAuthenticated,
-    catchAsyncErrors(async (req, res) => {
-        try {
-            // Buat workbook baru
-            const workbook = xlsx.utils.book_new();
-
-            // Data contoh
-            const templateData = [
-                {
-                    'Nama Siswa': 'Contoh: Budi Santoso',
-                    'Total Kehadiran': 'Contoh: 105 (angka, 0-365)',
-                    'Nilai Akademik': 'Contoh: 85 (angka, 0-100)',
-                    'Kelas': 'Contoh: 10A',
-                    'Semester': 'Contoh: Ganjil',
-                    'Tahun': 'Contoh: 2024'
-                },
-                {
-                    'Nama Siswa': 'Bella Anggraini',
-                    'Total Kehadiran': 109,
-                    'Nilai Akademik': 92,
-                    'Kelas': '3',
-                    'Semester': 'Ganjil',
-                    'Tahun': 2024
-                },
-                {
-                    'Nama Siswa': 'Lukman Nulhakim',
-                    'Total Kehadiran': 106,
-                    'Nilai Akademik': 71,
-                    'Kelas': '3',
-                    'Semester': 'Ganjil',
-                    'Tahun': 2024
-                }
-            ];
-
-            // Buat worksheet
-            const worksheet = xlsx.utils.json_to_sheet(templateData);
-
-            // Tambahkan worksheet ke workbook
-            xlsx.utils.book_append_sheet(workbook, worksheet, 'Template Siswa');
-
-            // Set header untuk download
-            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', 'attachment; filename=template-import-siswa.xlsx');
-
-            // Generate file dan kirim sebagai response
-            const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-            res.send(buffer);
-
-        } catch (error) {
-            return res.status(500).json({
-                code: 500,
-                status: "error",
-                message: "Terjadi kesalahan saat generate template",
-                error: error.message
-            });
-        }
-    })
-);
-
-// ✅ Create Siswa dengan prediksi otomatis
-router.post(
-    "",
-    isAuthenticated,
-    catchAsyncErrors(async (req, res) => {
-        // Validasi walikelas_id
-        if (!isValidUUID(req.body.walikelas_id)) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "Invalid walikelas_id format",
-            });
-        }
-
-        const validation = v.validate(req.body, schema);
-        if (validation !== true) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "Validation failed",
-                data: validation,
-            });
-        }
-
-        const { name, kelas, tahun, nilai, kehadiran, walikelas_id, semester } = req.body;
-
-        // Jika prestasi tidak disediakan, dapatkan prediksi dari API
-        let prestasi = req.body.prestasi;
-        if (!prestasi) {
-            prestasi = await getPrediction(nilai, kehadiran);
-            if (!prestasi) {
-                prestasi = "Cukup";
-            }
-        }
-
-        const siswa = await Siswa.create({
-            id: uuidv4(),
-            name,
-            kelas,
-            tahun,
-            nilai,
-            kehadiran,
-            prestasi,
-            walikelas_id,
-            semester
-        });
-
-        // Get data dengan include walikelas
-        const siswaWithWalikelas = await Siswa.findByPk(siswa.id, {
-            include: [{
-                model: User,
-                as: 'walikelas',
-                attributes: ['id', 'name', 'email']
-            }]
-        });
-
-        res.status(201).json({
-            code: 201,
-            status: "success",
-            message: "Siswa created successfully",
-            data: {
-                id: siswaWithWalikelas.id,
-                name: siswaWithWalikelas.name,
-                kelas: siswaWithWalikelas.kelas,
-                tahun: siswaWithWalikelas.tahun,
-                nilai: siswaWithWalikelas.nilai,
-                kehadiran: siswaWithWalikelas.kehadiran,
-                prestasi: siswaWithWalikelas.prestasi,
-                walikelas: siswaWithWalikelas.walikelas ? {
-                    id: siswaWithWalikelas.walikelas.id,
-                    name: siswaWithWalikelas.walikelas.name,
-                    email: siswaWithWalikelas.walikelas.email
-                } : null,
-                semester: siswaWithWalikelas.semester,
-                createdAt: siswaWithWalikelas.createdAt,
-                updatedAt: siswaWithWalikelas.updatedAt
-            },
-        });
-    })
-);
-
-// ✅ Get All Siswa (Admin dengan filter lengkap)
+// ✅ Get All Siswa
 router.get(
     "/list",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
         try {
-            const { kelas, tahun, semester, walikelas_id, prestasi, page, limit, search } = req.query;
-
-            // Hanya admin yang bisa akses semua data
-            if (req.user.role !== 'operator') {
-                return res.status(403).json({
-                    code: 403,
-                    status: "error",
-                    message: "Hanya operator yang dapat mengakses semua data siswa",
-                });
-            }
+            const { kelas, tahun, semester, page = 1, limit = 10, search } = req.query;
 
             let whereCondition = {};
 
-            // Filter berdasarkan kelas
+            // Untuk wali kelas, hanya tampilkan siswa mereka sendiri
+            if (req.user.role === 'walikelas') {
+                const walikelas_id = await getWaliKelasId(req.user.id);
+                if (walikelas_id) {
+                    whereCondition.walikelas_id = walikelas_id;
+                }
+            }
+
+            // Filter lainnya dengan validasi
             if (kelas) whereCondition.kelas = kelas;
 
-            // Filter berdasarkan tahun
-            if (tahun) {
-                const tahunNum = parseInt(tahun);
-                if (isNaN(tahunNum)) {
-                    return res.status(400).json({
-                        code: 400,
-                        status: "error",
-                        message: "Invalid tahun format, must be a number",
-                    });
-                }
-                whereCondition.tahun = tahunNum;
+            const tahunParsed = parseTahun(tahun);
+            if (tahunParsed !== null) {
+                whereCondition.tahun = tahunParsed;
             }
 
-            // Filter berdasarkan semester
-            if (semester) {
-                if (!['1', '2'].includes(semester)) {
-                    return res.status(400).json({
-                        code: 400,
-                        status: "error",
-                        message: "Invalid semester format, must be '1' or '2'",
-                    });
-                }
-                whereCondition.semester = semester;
-            }
+            if (semester) whereCondition.semester = semester;
 
-            // Filter berdasarkan wali kelas
-            if (walikelas_id) {
-                if (!isValidUUID(walikelas_id)) {
-                    return res.status(400).json({
-                        code: 400,
-                        status: "error",
-                        message: "Invalid walikelas_id format",
-                    });
-                }
-                whereCondition.walikelas_id = walikelas_id;
-            }
-
-            // Filter berdasarkan prestasi
-            if (prestasi) {
-                const validPrestasi = ['Sangat Baik', 'Baik', 'Cukup', 'Kurang', 'Kurang Sekali'];
-                if (!validPrestasi.includes(prestasi)) {
-                    return res.status(400).json({
-                        code: 400,
-                        status: "error",
-                        message: "Invalid prestasi value",
-                    });
-                }
-                whereCondition.prestasi = prestasi;
-            }
-
-            // Filter berdasarkan pencarian nama
-            if (search) {
-                if (search.length < 2) {
-                    return res.status(400).json({
-                        code: 400,
-                        status: "error",
-                        message: "Search query must be at least 2 characters long",
-                    });
-                }
+            if (search && search.length >= 2) {
                 whereCondition.name = { [Op.like]: `%${search}%` };
             }
 
-            // Pagination validation
-            const pageNumber = parseInt(page) || 1;
-            const pageSize = parseInt(limit) || 10;
-
-            if (pageNumber < 1) {
-                return res.status(400).json({
-                    code: 400,
-                    status: "error",
-                    message: "Page number must be greater than 0",
-                });
-            }
-
-            if (pageSize < 1 || pageSize > 100) {
-                return res.status(400).json({
-                    code: 400,
-                    status: "error",
-                    message: "Limit must be between 1 and 100",
-                });
-            }
-
+            // Validasi dan parse pagination
+            const { pageNumber, pageSize } = parsePagination(page, limit);
             const offset = (pageNumber - 1) * pageSize;
 
             // Hitung total data
             const totalSiswa = await Siswa.count({ where: whereCondition });
-
-            // Hitung total pages
             const totalPages = Math.ceil(totalSiswa / pageSize);
 
-            // Validate if page number exceeds total pages
+            // Validasi jika page number melebihi total pages
             if (pageNumber > totalPages && totalPages > 0) {
                 return res.status(400).json({
                     code: 400,
@@ -488,9 +371,17 @@ router.get(
                 });
             }
 
-            // Get data dengan pagination
             const siswaList = await Siswa.findAll({
                 where: whereCondition,
+                include: [{
+                    model: WaliKelas,
+                    as: 'walikelas',
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['id', 'name', 'email']
+                    }]
+                }],
                 order: [
                     ['tahun', 'DESC'],
                     ['semester', 'ASC'],
@@ -498,54 +389,7 @@ router.get(
                     ['name', 'ASC']
                 ],
                 offset: offset,
-                limit: pageSize,
-                include: [{
-                    model: User,
-                    as: 'walikelas',
-                    attributes: ['id', 'name', 'email', 'role']
-                }]
-            });
-
-            // Hitung statistik
-            const stats = await Siswa.findAll({
-                where: whereCondition,
-                attributes: [
-                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'totalSiswa'],
-                    [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
-                    [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran'],
-                    [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('nilai')), 2), 'avgNilaiRounded'],
-                    [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('kehadiran')), 2), 'avgKehadiranRounded']
-                ],
-                raw: true
-            });
-
-            // Hitung distribusi prestasi
-            const prestasiStats = await Siswa.findAll({
-                where: whereCondition,
-                attributes: [
-                    'prestasi',
-                    [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
-                ],
-                group: ['prestasi'],
-                raw: true
-            });
-
-            const statistics = stats.length > 0 ? stats[0] : {
-                totalSiswa: 0,
-                avgNilai: 0,
-                avgKehadiran: 0,
-                avgNilaiRounded: 0,
-                avgKehadiranRounded: 0
-            };
-
-            // Format prestasi distribution dengan semua kategori
-            const allPrestasiCategories = ['Sangat Baik', 'Baik', 'Cukup', 'Kurang', 'Kurang Sekali'];
-            const formattedPrestasi = allPrestasiCategories.map(category => {
-                const found = prestasiStats.find(stat => stat.prestasi === category);
-                return {
-                    prestasi: category,
-                    count: found ? parseInt(found.count) : 0
-                };
+                limit: pageSize
             });
 
             res.status(200).json({
@@ -556,23 +400,15 @@ router.get(
                     pagination: {
                         currentPage: pageNumber,
                         totalPages: totalPages,
-                        totalSiswa: parseInt(statistics.totalSiswa) || 0,
+                        totalSiswa: totalSiswa,
                         pageSize: pageSize,
                         hasNext: pageNumber < totalPages,
                         hasPrev: pageNumber > 1
-                    },
-                    statistics: {
-                        avgNilai: parseFloat(statistics.avgNilaiRounded) || 0,
-                        avgKehadiran: parseFloat(statistics.avgKehadiranRounded) || 0,
-                        totalSiswa: parseInt(statistics.totalSiswa) || 0,
-                        prestasiDistribution: formattedPrestasi
                     },
                     filters: {
                         kelas: kelas || 'Semua',
                         tahun: tahun || 'Semua',
                         semester: semester || 'Semua',
-                        walikelas: walikelas_id || 'Semua',
-                        prestasi: prestasi || 'Semua',
                         search: search || ''
                     },
                     siswa: siswaList.map((siswa) => ({
@@ -580,193 +416,24 @@ router.get(
                         name: siswa.name,
                         kelas: siswa.kelas,
                         tahun: siswa.tahun,
-                        nilai: siswa.nilai,
-                        kehadiran: siswa.kehadiran,
-                        prestasi: siswa.prestasi,
+                        semester: siswa.semester,
                         walikelas: siswa.walikelas ? {
                             id: siswa.walikelas.id,
-                            name: siswa.walikelas.name,
-                            email: siswa.walikelas.email,
-                            role: siswa.walikelas.role
+                            user: {
+                                id: siswa.walikelas.user.id,
+                                name: siswa.walikelas.user.name,
+                                email: siswa.walikelas.user.email
+                            },
+                            sekolah: siswa.walikelas.sekolah,
+                            jurusan: siswa.walikelas.jurusan
                         } : null,
-                        semester: siswa.semester,
                         createdAt: siswa.createdAt,
                         updatedAt: siswa.updatedAt
                     }))
                 },
             });
         } catch (error) {
-            return res.status(500).json({
-                code: 500,
-                status: "error",
-                message: "Terjadi kesalahan saat mengambil data siswa",
-                error: error.message
-            });
-        }
-    })
-);
-
-// ✅ Get Available Filters for Admin
-router.get(
-    "/admin/filters",
-    isAuthenticated,
-    catchAsyncErrors(async (req, res) => {
-        try {
-            // Hanya admin yang bisa akses
-            if (req.user.role !== 'operator') {
-                return res.status(403).json({
-                    code: 403,
-                    status: "error",
-                    message: "Hanya operator yang dapat mengakses filter admin",
-                });
-            }
-
-            const years = await Siswa.findAll({
-                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('tahun')), 'tahun']],
-                order: [['tahun', 'DESC']],
-                raw: true
-            });
-
-            const semesters = await Siswa.findAll({
-                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('semester')), 'semester']],
-                order: [['semester', 'ASC']],
-                raw: true
-            });
-
-            const classes = await Siswa.findAll({
-                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('kelas')), 'kelas']],
-                order: [['kelas', 'ASC']],
-                raw: true
-            });
-
-            const prestasiCategories = await Siswa.findAll({
-                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('prestasi')), 'prestasi']],
-                order: [['prestasi', 'ASC']],
-                raw: true
-            });
-
-            // Get semua wali kelas
-            const walikelasList = await User.findAll({
-                where: { role: 'walikelas' },
-                attributes: ['id', 'name', 'email'],
-                order: [['name', 'ASC']]
-            });
-
-            res.status(200).json({
-                code: 200,
-                status: "success",
-                message: "Available filters retrieved successfully",
-                data: {
-                    years: years.map(item => item.tahun),
-                    semesters: semesters.map(item => item.semester),
-                    classes: classes.map(item => item.kelas),
-                    prestasi: prestasiCategories.map(item => item.prestasi),
-                    walikelas: walikelasList.map(wali => ({
-                        id: wali.id,
-                        name: wali.name,
-                        email: wali.email
-                    }))
-                }
-            });
-
-        } catch (error) {
-            return res.status(500).json({
-                code: 500,
-                status: "error",
-                message: "Terjadi kesalahan saat mengambil data filter",
-                error: error.message
-            });
-        }
-    })
-);
-
-router.get(
-    "/walikelas/list",
-    isAuthenticated,
-    catchAsyncErrors(async (req, res) => {
-        try {
-            const { tahun, semester, kelas } = req.query;
-            const walikelas_id = req.user.id; // Ambil dari user yang login
-
-            // Validasi bahwa user adalah wali kelas
-            if (req.user.role !== 'walikelas') {
-                return res.status(403).json({
-                    code: 403,
-                    status: "error",
-                    message: "Hanya wali kelas yang dapat mengakses data ini",
-                });
-            }
-
-            let whereCondition = { walikelas_id: walikelas_id };
-
-            // Tambahkan filter jika ada
-            if (tahun) whereCondition.tahun = parseInt(tahun);
-            if (semester) whereCondition.semester = semester;
-            if (kelas) whereCondition.kelas = kelas;
-
-            const siswaList = await Siswa.findAll({
-                where: whereCondition,
-                order: [
-                    ['kelas', 'ASC'],
-                    ['name', 'ASC']
-                ],
-                include: [{
-                    model: User,
-                    as: 'walikelas',
-                    attributes: ['id', 'name', 'email']
-                }]
-            });
-
-            // Hitung statistik sederhana
-            const totalSiswa = siswaList.length;
-            const avgNilai = totalSiswa > 0
-                ? Math.round(siswaList.reduce((sum, siswa) => sum + siswa.nilai, 0) / totalSiswa * 100) / 100
-                : 0;
-            const avgKehadiran = totalSiswa > 0
-                ? Math.round(siswaList.reduce((sum, siswa) => sum + siswa.kehadiran, 0) / totalSiswa * 100) / 100
-                : 0;
-
-            // Distribusi prestasi
-            const prestasiDistribution = siswaList.reduce((acc, siswa) => {
-                acc[siswa.prestasi] = (acc[siswa.prestasi] || 0) + 1;
-                return acc;
-            }, {});
-
-            // Daftar kelas unik
-            const kelasUnik = [...new Set(siswaList.map(siswa => siswa.kelas))];
-
-            res.status(200).json({
-                code: 200,
-                status: "success",
-                message: "Data siswa retrieved successfully",
-                data: {
-                    summary: {
-                        totalSiswa,
-                        avgNilai,
-                        avgKehadiran,
-                        kelas: kelasUnik
-                    },
-                    prestasiDistribution,
-                    siswa: siswaList.map((siswa) => ({
-                        id: siswa.id,
-                        name: siswa.name,
-                        kelas: siswa.kelas,
-                        tahun: siswa.tahun,
-                        nilai: siswa.nilai,
-                        kehadiran: siswa.kehadiran,
-                        prestasi: siswa.prestasi,
-                        walikelas: siswa.walikelas ? {
-                            id: siswa.walikelas.id,
-                            name: siswa.walikelas.name,
-                            email: siswa.walikelas.email
-                        } : null,
-                        semester: siswa.semester,
-                        createdAt: siswa.createdAt,
-                        updatedAt: siswa.updatedAt
-                    }))
-                },
-            });
-        } catch (error) {
+            console.error("Error in get siswa list:", error);
             return res.status(500).json({
                 code: 500,
                 status: "error",
@@ -782,52 +449,67 @@ router.get(
     "/:id",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
-        // Validasi UUID
-        if (!isValidUUID(req.params.id)) {
-            return res.status(400).json({
-                code: 400,
+        try {
+            if (!isValidUUID(req.params.id)) {
+                return res.status(400).json({
+                    code: 400,
+                    status: "error",
+                    message: "Invalid siswa ID format",
+                });
+            }
+
+            const siswa = await Siswa.findByPk(req.params.id, {
+                include: [{
+                    model: WaliKelas,
+                    as: 'walikelas',
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['id', 'name', 'email']
+                    }]
+                }]
+            });
+
+            if (!siswa) {
+                return res.status(404).json({
+                    code: 404,
+                    status: "error",
+                    message: "Siswa not found",
+                });
+            }
+
+            res.status(200).json({
+                code: 200,
+                status: "success",
+                data: {
+                    id: siswa.id,
+                    name: siswa.name,
+                    kelas: siswa.kelas,
+                    tahun: siswa.tahun,
+                    semester: siswa.semester,
+                    walikelas: siswa.walikelas ? {
+                        id: siswa.walikelas.id,
+                        user: {
+                            id: siswa.walikelas.user.id,
+                            name: siswa.walikelas.user.name,
+                            email: siswa.walikelas.user.email
+                        },
+                        sekolah: siswa.walikelas.sekolah,
+                        jurusan: siswa.walikelas.jurusan
+                    } : null,
+                    createdAt: siswa.createdAt,
+                    updatedAt: siswa.updatedAt
+                },
+            });
+        } catch (error) {
+            console.error("Error in get siswa by id:", error);
+            res.status(500).json({
+                code: 500,
                 status: "error",
-                message: "Invalid siswa ID format",
+                message: "Terjadi kesalahan saat mengambil data siswa",
+                error: error.message
             });
         }
-
-        const siswa = await Siswa.findByPk(req.params.id, {
-            include: [{
-                model: User,
-                as: 'walikelas',
-                attributes: ['id', 'name', 'email']
-            }]
-        });
-
-        if (!siswa) {
-            return res.status(404).json({
-                code: 404,
-                status: "error",
-                message: "Siswa not found",
-            });
-        }
-
-        res.status(200).json({
-            code: 200,
-            status: "success",
-            data: {
-                id: siswa.id,
-                name: siswa.name,
-                kelas: siswa.kelas,
-                tahun: siswa.tahun,
-                nilai: siswa.nilai,
-                kehadiran: siswa.kehadiran,
-                prestasi: siswa.prestasi,
-                walikelas: siswa.walikelas ? {
-                    id: siswa.walikelas.id,
-                    name: siswa.walikelas.name,
-                    email: siswa.walikelas.email
-                } : null,
-                semester: siswa.semester,
-                createdAt: siswa.createdAt,
-                updatedAt: siswa.updatedAt
-            },
-        });
     })
 );
 
@@ -836,104 +518,92 @@ router.put(
     "/:id",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
-        // Validasi UUID
-        if (!isValidUUID(req.params.id)) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "Invalid siswa ID format",
-            });
-        }
-
-        // Validasi walikelas_id jika ada di body
-        if (req.body.walikelas_id && !isValidUUID(req.body.walikelas_id)) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "Invalid walikelas_id format",
-            });
-        }
-
-        const validation = v.validate(req.body, schema);
-        if (validation !== true) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "Validation failed",
-                data: validation,
-            });
-        }
-
-        const { name, kelas, tahun, nilai, kehadiran, walikelas_id, semester } = req.body;
-
-        // Cek apakah siswa exists
-        const existingSiswa = await Siswa.findByPk(req.params.id);
-        if (!existingSiswa) {
-            return res.status(404).json({
-                code: 404,
-                status: "error",
-                message: "Siswa not found",
-            });
-        }
-
-        // Jika nilai atau kehadiran berubah, update prediksi prestasi
-        let prestasi = req.body.prestasi;
-        if (!prestasi && (nilai !== existingSiswa.nilai || kehadiran !== existingSiswa.kehadiran)) {
-            prestasi = await getPrediction(nilai, kehadiran);
-            if (!prestasi) {
-                prestasi = existingSiswa.prestasi;
+        try {
+            if (!isValidUUID(req.params.id)) {
+                return res.status(400).json({
+                    code: 400,
+                    status: "error",
+                    message: "Invalid siswa ID format",
+                });
             }
+
+            const validation = v.validate(req.body, schema);
+            if (validation !== true) {
+                return res.status(400).json({
+                    code: 400,
+                    status: "error",
+                    message: "Validation failed",
+                    data: validation,
+                });
+            }
+
+            const { name, kelas, tahun, semester } = req.body;
+
+            // Cek apakah siswa exists
+            const existingSiswa = await Siswa.findByPk(req.params.id);
+            if (!existingSiswa) {
+                return res.status(404).json({
+                    code: 404,
+                    status: "error",
+                    message: "Siswa not found",
+                });
+            }
+
+            await Siswa.update({
+                name,
+                kelas,
+                tahun,
+                semester
+            }, {
+                where: { id: req.params.id }
+            });
+
+            // Get updated data
+            const siswa = await Siswa.findByPk(req.params.id, {
+                include: [{
+                    model: WaliKelas,
+                    as: 'walikelas',
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['id', 'name', 'email']
+                    }]
+                }]
+            });
+
+            res.status(200).json({
+                code: 200,
+                status: "success",
+                message: "Siswa updated successfully",
+                data: {
+                    id: siswa.id,
+                    name: siswa.name,
+                    kelas: siswa.kelas,
+                    tahun: siswa.tahun,
+                    semester: siswa.semester,
+                    walikelas: siswa.walikelas ? {
+                        id: siswa.walikelas.id,
+                        user: {
+                            id: siswa.walikelas.user.id,
+                            name: siswa.walikelas.user.name,
+                            email: siswa.walikelas.user.email
+                        },
+                        sekolah: siswa.walikelas.sekolah,
+                        jurusan: siswa.walikelas.jurusan
+                    } : null,
+                    createdAt: siswa.createdAt,
+                    updatedAt: siswa.updatedAt
+                },
+            });
+        } catch (error) {
+            console.error("Error in update siswa:", error);
+            res.status(500).json({
+                code: 500,
+                status: "error",
+                message: "Terjadi kesalahan saat mengupdate siswa",
+                error: error.message
+            });
         }
-
-        const updatedData = {
-            name,
-            kelas,
-            tahun,
-            nilai,
-            kehadiran,
-            walikelas_id,
-            semester
-        };
-
-        if (prestasi) {
-            updatedData.prestasi = prestasi;
-        }
-
-        await Siswa.update(updatedData, {
-            where: { id: req.params.id }
-        });
-
-        // Get updated data
-        const siswa = await Siswa.findByPk(req.params.id, {
-            include: [{
-                model: User,
-                as: 'walikelas',
-                attributes: ['id', 'name', 'email']
-            }]
-        });
-
-        res.status(200).json({
-            code: 200,
-            status: "success",
-            message: "Siswa updated successfully",
-            data: {
-                id: siswa.id,
-                name: siswa.name,
-                kelas: siswa.kelas,
-                tahun: siswa.tahun,
-                nilai: siswa.nilai,
-                kehadiran: siswa.kehadiran,
-                prestasi: siswa.prestasi,
-                walikelas: siswa.walikelas ? {
-                    id: siswa.walikelas.id,
-                    name: siswa.walikelas.name,
-                    email: siswa.walikelas.email
-                } : null,
-                semester: siswa.semester,
-                createdAt: siswa.createdAt,
-                updatedAt: siswa.updatedAt
-            },
-        });
     })
 );
 
@@ -942,140 +612,41 @@ router.delete(
     "/:id",
     isAuthenticated,
     catchAsyncErrors(async (req, res) => {
-        // Validasi UUID
-        if (!isValidUUID(req.params.id)) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "Invalid siswa ID format",
-            });
-        }
-
-        const deleted = await Siswa.destroy({
-            where: { id: req.params.id }
-        });
-
-        if (!deleted) {
-            return res.status(404).json({
-                code: 404,
-                status: "error",
-                message: "Siswa not found",
-            });
-        }
-
-        res.status(200).json({
-            code: 200,
-            status: "success",
-            message: "Siswa deleted successfully",
-        });
-    })
-);
-
-// ✅ Get Prediksi Prestasi (standalone endpoint)
-router.post(
-    "/predict",
-    isAuthenticated,
-    catchAsyncErrors(async (req, res) => {
-        const { nilai_akademik, total_kehadiran } = req.body;
-
-        if (nilai_akademik === undefined || total_kehadiran === undefined) {
-            return res.status(400).json({
-                code: 400,
-                status: "error",
-                message: "nilai_akademik and total_kehadiran are required",
-            });
-        }
-
         try {
-            const prediksi = await getPrediction(nilai_akademik, total_kehadiran);
-
-            if (!prediksi) {
-                return res.status(500).json({
-                    code: 500,
+            if (!isValidUUID(req.params.id)) {
+                return res.status(400).json({
+                    code: 400,
                     status: "error",
-                    message: "Prediction service unavailable",
+                    message: "Invalid siswa ID format",
+                });
+            }
+
+            const deleted = await Siswa.destroy({
+                where: { id: req.params.id }
+            });
+
+            if (!deleted) {
+                return res.status(404).json({
+                    code: 404,
+                    status: "error",
+                    message: "Siswa not found",
                 });
             }
 
             res.status(200).json({
                 code: 200,
                 status: "success",
-                data: {
-                    nilai_akademik,
-                    total_kehadiran,
-                    prediksi_prestasi: prediksi
-                }
+                message: "Siswa deleted successfully",
             });
-
         } catch (error) {
+            console.error("Error in delete siswa:", error);
             res.status(500).json({
                 code: 500,
                 status: "error",
-                message: "Error getting prediction",
+                message: "Terjadi kesalahan saat menghapus siswa",
                 error: error.message
             });
         }
-    })
-);
-
-// ✅ Get Statistics
-router.get(
-    "/stats/overview",
-    isAuthenticated,
-    catchAsyncErrors(async (req, res) => {
-        const { tahun, semester } = req.query;
-
-        let whereCondition = {};
-        if (tahun) whereCondition.tahun = parseInt(tahun);
-        if (semester) whereCondition.semester = semester;
-
-        const stats = await Siswa.findAll({
-            where: whereCondition,
-            attributes: [
-                [Sequelize.fn('COUNT', Sequelize.col('id')), 'totalSiswa'],
-                [Sequelize.fn('AVG', Sequelize.col('nilai')), 'avgNilai'],
-                [Sequelize.fn('AVG', Sequelize.col('kehadiran')), 'avgKehadiran'],
-                [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('nilai')), 2), 'avgNilaiRounded'],
-                [Sequelize.fn('ROUND', Sequelize.fn('AVG', Sequelize.col('kehadiran')), 2), 'avgKehadiranRounded']
-            ],
-            raw: true
-        });
-
-        // Hitung distribusi prestasi
-        const prestasiStats = await Siswa.findAll({
-            where: whereCondition,
-            attributes: [
-                'prestasi',
-                [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
-            ],
-            group: ['prestasi'],
-            raw: true
-        });
-
-        const result = stats.length > 0 ? stats[0] : {
-            totalSiswa: 0,
-            avgNilai: 0,
-            avgKehadiran: 0,
-            avgNilaiRounded: 0,
-            avgKehadiranRounded: 0
-        };
-
-        // Format prestasi distribution
-        const prestasiDistribution = {};
-        prestasiStats.forEach(stat => {
-            prestasiDistribution[stat.prestasi] = parseInt(stat.count);
-        });
-
-        res.status(200).json({
-            code: 200,
-            status: "success",
-            data: {
-                totalSiswa: parseInt(result.totalSiswa) || 0,
-                avgNilai: parseFloat(result.avgNilaiRounded) || 0,
-                avgKehadiran: parseFloat(result.avgKehadiranRounded) || 0,
-                prestasiDistribution
-            }
-        });
     })
 );
 

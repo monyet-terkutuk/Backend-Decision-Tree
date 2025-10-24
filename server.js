@@ -4,6 +4,9 @@ const cloudinary = require("cloudinary");
 // Import sequelize
 const sequelize = require('./config/database');
 
+// Import dan setup associations
+const setupAssociations = require('./model/associations');
+
 // Handling uncaught Exception
 process.on("uncaughtException", (err) => {
   console.log(`Error: ${err.message}`);
@@ -22,6 +25,10 @@ async function initializeDatabase() {
   try {
     await sequelize.authenticate();
     console.log('MySQL Database connected...');
+
+    // Setup associations sebelum sync
+    setupAssociations();
+    console.log('Associations setup completed...');
 
     // Sync tanpa force (tidak hapus data yang ada)
     await sequelize.sync({ force: false });

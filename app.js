@@ -44,11 +44,13 @@ if (process.env.NODE_ENV !== "PRODUCTION") {
 const user = require("./controller/user");
 const siswa = require("./controller/siswaController");
 const dashboard = require("./controller/dasboardController");
+const penilaianRoutes = require("./controller/penilaianController");
 
 // define routes
 app.use("/users", user);
 app.use("/siswa", siswa);
 app.use("/dashboard", dashboard);
+app.use("/penilaian", penilaianRoutes);
 
 // app.use("", welcome);
 

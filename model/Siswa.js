@@ -1,7 +1,6 @@
-// model/Siswa.js
+// models/Siswa.js
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
-const User = require('./User');
 
 const Siswa = sequelize.define('Siswa', {
     id: {
@@ -21,39 +20,23 @@ const Siswa = sequelize.define('Siswa', {
         type: DataTypes.INTEGER,
         allowNull: false
     },
-    nilai: {
-        type: DataTypes.INTEGER,
+    semester: {
+        type: DataTypes.ENUM('ganjil', 'genap'),
         allowNull: false
-    },
-    kehadiran: {
-        type: DataTypes.INTEGER,
-        allowNull: false
-    },
-    prestasi: {
-        type: DataTypes.STRING,
-        allowNull: true
     },
     walikelas_id: {
         type: DataTypes.UUID,
         allowNull: false,
         references: {
-            model: 'users',
+            model: 'walikelas',
             key: 'id'
         }
-    },
-    semester: {
-        type: DataTypes.STRING,
-        allowNull: false
     }
 }, {
     tableName: 'siswas',
     timestamps: true,
-    createdAt: 'createdAt',
-    updatedAt: 'updatedAt'
 });
 
-// Associations
-Siswa.belongsTo(User, { foreignKey: 'walikelas_id', as: 'walikelas' });
-User.hasMany(Siswa, { foreignKey: 'walikelas_id' });
+// HAPUS associations dari sini, pindahkan ke associations.js
 
 module.exports = Siswa;
