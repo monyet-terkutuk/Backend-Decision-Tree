@@ -8,7 +8,9 @@ const sequelize = new Sequelize(
     process.env.DB_PASSWORD,
     {
         host: process.env.DB_HOST,
+        port: process.env.DB_PORT, // 👈 PASTIKAN INI ADA
         dialect: 'mysql',
+        dialectModule: mysql2, // 👈 GUNAKAN mysql2 untuk SSL support yang better
         pool: {
             max: 5,           // Maximum number of connection in pool
             min: 0,           // Minimum number of connection in pool
@@ -20,7 +22,11 @@ const sequelize = new Sequelize(
         },
         logging: false,     // Disable logging to reduce queries
         dialectOptions: {
-            connectTimeout: 60000 // Increase timeout
+            connectTimeout: 60000, // Increase timeout
+            ssl: { // 👈 TAMBAHKAN KONFIGURASI SSL INI
+                rejectUnauthorized: true,
+                minVersion: "TLSv1.2"
+            }
         }
     }
 );
