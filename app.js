@@ -52,7 +52,6 @@ app.use("/siswa", siswa);
 app.use("/dashboard", dashboard);
 app.use("/penilaian", penilaianRoutes);
 
-// app.use("", welcome);
 
 // it's for ErrorHandling
 app.use(ErrorHandler);
