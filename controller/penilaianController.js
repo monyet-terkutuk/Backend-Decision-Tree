@@ -43,7 +43,7 @@ const isValidUUID = (id) => {
 // Helper function untuk mendapatkan prediksi dari API
 const getPrediction = async (matematika, ipa, ips, b_indonesia, b_inggris, semester) => {
     try {
-        const response = await axios.post("https://saving-lemming-loyal.ngrok-free.app/predict", {
+        const response = await axios.post("https://hammily-nonpossessed-tamar.ngrok-free.dev/predict", {
             Matematika: matematika,
             IPA: ipa,
             IPS: ips,
