@@ -388,13 +388,13 @@ router.put(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     const schema = {
       name: { type: "string", optional: true, max: 255 },
@@ -569,13 +569,13 @@ router.get(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     const users = await User.findAll({
       attributes: { exclude: ['password'] },
@@ -626,13 +626,13 @@ router.get(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     const user = await User.findByPk(req.params.id, {
       attributes: { exclude: ['password'] },
@@ -750,13 +750,13 @@ router.get(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     const users = await User.findAll({
       attributes: { exclude: ['password'] },
@@ -789,13 +789,13 @@ router.get(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     const user = await User.findByPk(req.params.id, {
       attributes: { exclude: ['password'] }
@@ -835,13 +835,13 @@ router.put(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     const schema = {
       name: { type: "string", optional: true, max: 255 },
@@ -929,13 +929,13 @@ router.delete(
   isAuthenticated,
   catchAsyncErrors(async (req, res, next) => {
     // Check if user is admin/operator
-    if (req.user.role !== 'operator') {
-      return res.status(403).json({
-        code: 403,
-        status: "error",
-        message: "Access denied. Admin role required.",
-      });
-    }
+    // if (req.user.role !== 'operator') {
+    //   return res.status(403).json({
+    //     code: 403,
+    //     status: "error",
+    //     message: "Access denied. Admin role required.",
+    //   });
+    // }
 
     // Prevent user from deleting themselves
     if (req.params.id === req.user.id) {
